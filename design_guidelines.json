@@ -1,0 +1,156 @@
+{
+  "app_name": "TruckNav Pro",
+  "personality": "7 Dark-First Utility DARK",
+  "personality_one_liner": "A high-contrast, tactical command center optimized for fast scanning, night driving, and strict compliance tracking without visual fatigue.",
+  "color": {
+    "surface": "#0C0D10",
+    "onSurface": "#F4F5F7",
+    "surfaceSecondary": "#17191E",
+    "onSurfaceSecondary": "#E0E2E7",
+    "surfaceTertiary": "#22252C",
+    "onSurfaceTertiary": "#B8BCC6",
+    "surfaceInverse": "#FFFFFF",
+    "onSurfaceInverse": "#0C0D10",
+    "brand": "#FF9F0A",
+    "brandPrimary": "#FF9F0A",
+    "onBrandPrimary": "#0C0D10",
+    "brandSecondary": "#D48205",
+    "onBrandSecondary": "#0C0D10",
+    "brandTertiary": "#4D3003",
+    "onBrandTertiary": "#FFD38B",
+    "success": "#32D74B",
+    "onSuccess": "#0A2F10",
+    "warning": "#FFD60A",
+    "onWarning": "#332A02",
+    "error": "#FF453A",
+    "onError": "#450907",
+    "info": "#3EA8FF",
+    "onInfo": "#051F36",
+    "border": "#282C35",
+    "borderStrong": "#3B404D",
+    "divider": "#1C1F26",
+    "muted": "#757B8A",
+    "onBrand": "#0C0D10"
+  },
+  "typography": {
+    "displayFontFamily": "Rajdhani",
+    "textFontFamily": "IBM Plex Sans",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24,
+      "3xl": 48
+    }
+  },
+  "spacing": {
+    "rule": "Dense but highly structured. Use generous spacing (md/lg) between distinct sections (e.g., Map vs Tachograph) but tight spacing (xs/sm) within metric groups and stat clusters.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 4,
+    "md": 8,
+    "lg": 12,
+    "pill": 999
+  },
+  "shadow_tier": "0",
+  "navigation": "bottom_tabs",
+  "icon_set": "Phosphor",
+  "glassmorphism": {
+    "enabled": "false",
+    "do's": [
+      "Use solid dark surfaces instead of glass to ensure maximum legibility and contrast during night shifts."
+    ],
+    "dont's": [
+      "No blur or frosted glass; prioritize battery efficiency and harsh contrast for instant readability."
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "none",
+      "android": "none",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "none",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Tachograph Dashboard (Home)",
+      "purpose": "A live operational view showing remaining driving time, EU compliance rings, and manual state selector.",
+      "states": {
+        "loading": "Skeleton of the progress rings and stat cards using surfaceTertiary.",
+        "empty": "N/A for core dashboard, defaults to '0h 00m' if no shift started.",
+        "error": "High-contrast error card showing 'Tachograph connection lost' with a Retry button."
+      },
+      "layout": "Top half: oversized circular progress metric (Rajdhani) showing remaining drive time. Middle: segmented control for states (Driving, Work, Available, Rest). Bottom: scrollable list of today's logged events."
+    },
+    {
+      "name": "Navigation & Map",
+      "purpose": "Truck-specific routing map prioritizing vehicle dimensions and weight limits.",
+      "states": {
+        "loading": "Dark map placeholder skeleton.",
+        "empty": "Prompt to 'Set Destination' or 'Select Vehicle Profile' overlaying the map.",
+        "error": "Warning banner stating 'GPS signal lost' at the top of the map."
+      },
+      "layout": "Full-bleed map behind a floating top search bar. A floating bottom sheet handles route preview, time estimation, and active vehicle dimensions warning."
+    },
+    {
+      "name": "Vehicle Profile",
+      "purpose": "Configure dimensions, weight, axles, and HAZMAT for accurate routing.",
+      "states": {
+        "loading": "Form skeletons.",
+        "empty": "Illustration of a truck with 'No active vehicle selected'.",
+        "error": "Form validation errors in red below inputs."
+      },
+      "layout": "Single-column form. Numeric inputs use extra-large touch targets. Sticky primary 'Save Profile' button at the bottom."
+    },
+    {
+      "name": "Logbook / History",
+      "purpose": "Compliance log showing daily/weekly driving, rest, and work times for EU regulations.",
+      "states": {
+        "loading": "List skeletons.",
+        "empty": "Illustration of a logbook indicating 'No driving history found'.",
+        "error": "Error fetching logs with 'Retry Sync' button."
+      },
+      "layout": "Chronological timeline feed. Each row highlights state changes with colored indicators (Green for rest, Amber for driving) and mono-spaced timestamps."
+    }
+  ],
+  "haptics": {
+    "button_press": "light",
+    "state_change": "medium",
+    "warning_limit": "heavy",
+    "tab_switch": "light"
+  },
+  "images": {
+    "hero_background": {
+      "url": "https://images.unsplash.com/photo-1670509295484-df0c2512fec4?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1ODB8MHwxfHNlYXJjaHwxfHxtb2Rlcm4lMjB0cnVjayUyMGRyaXZpbmclMjBvbiUyMGhpZ2h3YXklMjBhdCUyMG5pZ2h0fGVufDB8fHx8MTc5MTU4MTk0MXww&ixlib=rb-4.1.0&q=85",
+      "alt": "Modern truck driving on highway at night"
+    },
+    "empty_state_vehicle": {
+      "url": "https://images.unsplash.com/photo-1772735625798-d7e0cdeeebae?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NDh8MHwxfHNlYXJjaHwxfHxkYXJrJTIwdHJ1Y2slMjBzdGVlcmluZyUyMHdoZWVsJTIwZGFzaGJvYXJkJTIwbmlnaHR8ZW58MHx8fHwxNzkxNTgxOTUzfDA&ixlib=rb-4.1.0&q=85",
+      "alt": "Dark truck cabin dashboard interior"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Follow the <Rules> strictly: Use native mobile patterns, ensure touch targets are >= 44x44pt, and respect the safe area.",
+    "The app uses the '7 Dark-First Utility DARK' personality. Do NOT invert colors or introduce light mode. This app is designed for truck cabins, prioritizing a tactical, high-contrast dark mode to prevent night-driving fatigue.",
+    "Do NOT use glassmorphism or blur effects. Rely on solid surfaces (`surfaceSecondary`, `surfaceTertiary`) and thin dividers (`divider`) to separate components. This ensures maximum legibility.",
+    "Typography hierarchy relies heavily on 'Rajdhani' for large metrics, clocks, and tachograph numbers, and 'IBM Plex Sans' for forms, labels, and lists.",
+    "Never use blue, indigo, or purple. The primary brand color is Amber (#FF9F0A), which signifies active tracking and utility.",
+    "Status indicators are critical for EU compliance: use the provided `success` (green) for Rest/Available states, `brandPrimary` (amber) for Driving/Work, `warning` (yellow) for nearing limits, and `error` (red) for violations.",
+    "Include haptics on status state toggles and tab switches for tactile feedback while driving.",
+    "Implement a persistent bottom button for the Vehicle Profile form and use oversized segmented controls for the tachograph state selection.",
+    "Apply gradient-to-dark scrims if layering text over the hero image on the splash or profile screens."
+  ]
+}
