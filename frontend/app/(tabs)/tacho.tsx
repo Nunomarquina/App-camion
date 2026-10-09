@@ -11,6 +11,7 @@ import {
   Linking,
 } from "react-native";
 import { useGpsAutoTracking } from "@/src/gps-tracker";
+import { CardReportSheet, CardReport } from "@/src/components/card-report-sheet";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Icon from "@react-native-vector-icons/material-design-icons";
 import * as Haptics from "expo-haptics";
@@ -78,6 +79,8 @@ export default function TachoScreen() {
   const [cardReading, setCardReading] = useState(false);
   const [cardMsg, setCardMsg] = useState<string | null>(null);
   const [autoGps, setAutoGps] = useState(false);
+  const [cardReport, setCardReport] = useState<CardReport | null>(null);
+  const [showReport, setShowReport] = useState(false);
   const styles = useStyles();
 
   const load = useCallback(async () => {
@@ -128,12 +131,15 @@ export default function TachoScreen() {
         body: JSON.stringify({ card_id: "SIM-" + (user?.id?.slice(0, 6) || "001") }),
       });
       setCardMsg(res.message);
+      setCardReport(res.report);
+      gps.setProfile({ speed_threshold_kmh: res.profile.speed_threshold_kmh, hold_s: res.profile.hold_s });
+      setShowReport(true);
       await load();
     } catch (e: any) {
       setCardMsg(e.message);
+      setTimeout(() => setCardMsg(null), 5000);
     } finally {
       setCardReading(false);
-      setTimeout(() => setCardMsg(null), 5000);
     }
   }
 
@@ -316,6 +322,9 @@ export default function TachoScreen() {
                       ? `${Math.round(gps.speed)} km/h · cambia a conducción/descanso solo`
                       : "Cambia de estado al moverte o detenerte. Confirma en Historial."}
             </Text>
+            <Text style={styles.gpsProfile} testID="gps-learned-profile">
+              Aprendido: &gt;{gps.profile.speed_threshold_kmh} km/h · {gps.profile.hold_s}s de confirmación
+            </Text>
             {gps.permission === "blocked" && (
               <Pressable testID="gps-open-settings" onPress={() => Linking.openSettings()} style={styles.settingsBtn}>
                 <Text style={styles.settingsText}>Abrir Ajustes</Text>
@@ -449,6 +458,12 @@ export default function TachoScreen() {
           </Text>
         )}
       </ScrollView>
+      <CardReportSheet
+        visible={showReport}
+        onClose={() => setShowReport(false)}
+        report={cardReport}
+        message={cardMsg}
+      />
     </View>
   );
 }
@@ -614,6 +629,7 @@ const useStyles = makeStyles((c) => ({
   },
   gpsTitle: { color: c.onSurface, fontSize: typography.base, fontWeight: "700" },
   gpsSub: { color: c.muted, fontSize: typography.sm, marginTop: 2 },
+  gpsProfile: { color: c.brandPrimary, fontSize: 11, marginTop: 4, fontWeight: "700" },
   settingsBtn: {
     alignSelf: "flex-start",
     marginTop: spacing.sm,

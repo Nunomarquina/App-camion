@@ -1,4 +1,7 @@
 """Mapbox Directions / Geocoding proxy with truck restrictions."""
+import asyncio
+import bisect
+import math
 import os
 from typing import Any, Dict, List, Optional
 
@@ -86,16 +89,16 @@ async def truck_route(origin: Dict[str, float], destination: Dict[str, float],
 
     # Truck time: cap each segment's speed at the vehicle max speed
     max_speed_ms = (vehicle.get("max_speed_kmh", 90) if vehicle else 90) / 3.6
+    weight_factor = 1.05 if vehicle and vehicle.get("weight_t", 0) > 20 else 1.0
     truck_s = 0.0
+    cum = [0.0]
     for leg in route.get("legs", []):
         ann = leg.get("annotation", {})
         for d, t in zip(ann.get("distance", []), ann.get("duration", [])):
-            truck_s += max(t, d / max_speed_ms)
+            truck_s += max(t, d / max_speed_ms) * weight_factor
+            cum.append(truck_s)
     if truck_s == 0:
         truck_s = route["duration"]
-    # Heavy vehicles accelerate/brake slower: small penalty by weight
-    if vehicle and vehicle.get("weight_t", 0) > 20:
-        truck_s *= 1.05
 
     steps = []
     for leg in route.get("legs", []):
@@ -123,4 +126,102 @@ async def truck_route(origin: Dict[str, float], destination: Dict[str, float],
         "polyline": _downsample(points),
         "steps": steps,
         "violations": violations,
+        "_points": points,
+        "_cum": cum if len(cum) == len(points) else None,
     }
+
+
+# ---------- Rest areas along the route ----------
+CATEGORY_URL = "https://api.mapbox.com/search/searchbox/v1/category/{cat}"
+REST_CATEGORIES = [("rest_area", "Área de descanso"), ("service_area", "Área de servicio")]
+SEARCH_WINDOW_S = 40 * 60      # look for stops in the 40 min of driving before the limit
+MAX_OFF_ROUTE_KM = 1.5
+
+
+def _hav_km(a_lat, a_lng, b_lat, b_lng) -> float:
+    r = 6371.0
+    p1, p2 = math.radians(a_lat), math.radians(b_lat)
+    dp, dl = p2 - p1, math.radians(b_lng - a_lng)
+    h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(h))
+
+
+def _index_at(cum: List[float], t: float) -> int:
+    return min(len(cum) - 1, bisect.bisect_left(cum, t))
+
+
+async def _category(client: httpx.AsyncClient, cat: str, bbox: str, proximity: str) -> List[Dict[str, Any]]:
+    try:
+        r = await client.get(CATEGORY_URL.format(cat=cat), params={
+            "access_token": _token(), "bbox": bbox, "proximity": proximity,
+            "limit": 25, "language": "es",
+        })
+        if r.status_code >= 400:
+            return []
+        return r.json().get("features", [])
+    except httpx.HTTPError:
+        return []
+
+
+async def rest_areas_for_stops(points: List[List[float]], cum: Optional[List[float]],
+                               stops: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not stops or not cum:
+        return [{**s, "lat": None, "lng": None, "km": None, "areas": []} for s in stops]
+    # cumulative km per point
+    km = [0.0]
+    for i in range(1, len(points)):
+        km.append(km[-1] + _hav_km(points[i - 1][0], points[i - 1][1], points[i][0], points[i][1]))
+
+    async def one(stop):
+        end_i = _index_at(cum, stop["at_drive_s"])
+        start_i = _index_at(cum, max(0, stop["at_drive_s"] - SEARCH_WINDOW_S))
+        window = points[start_i:end_i + 1] or [points[end_i]]
+        lats = [p[0] for p in window]
+        lngs = [p[1] for p in window]
+        pad = 0.03
+        bbox = f"{min(lngs) - pad},{min(lats) - pad},{max(lngs) + pad},{max(lats) + pad}"
+        prox = f"{points[end_i][1]},{points[end_i][0]}"
+        async with httpx.AsyncClient(timeout=15) as client:
+            results = await asyncio.gather(*[_category(client, c, bbox, prox) for c, _ in REST_CATEGORIES])
+        seen, areas = set(), []
+        step = max(1, len(window) // 300)
+        sampled = list(range(start_i, end_i + 1, step)) or [end_i]
+        for (cat, label), feats in zip(REST_CATEGORIES, results):
+            for f in feats:
+                coords = f.get("geometry", {}).get("coordinates")
+                fid = f.get("properties", {}).get("mapbox_id") or f.get("id")
+                if not coords or fid in seen:
+                    continue
+                lng, lat = coords
+                best_i, best_d = None, None
+                for i in sampled:
+                    d = _hav_km(lat, lng, points[i][0], points[i][1])
+                    if best_d is None or d < best_d:
+                        best_i, best_d = i, d
+                if best_d is None or best_d > MAX_OFF_ROUTE_KM:
+                    continue
+                seen.add(fid)
+                p = f.get("properties", {})
+                areas.append({
+                    "id": fid,
+                    "name": p.get("name") or label,
+                    "address": p.get("full_address") or p.get("place_formatted") or "",
+                    "type": label,
+                    "lat": lat,
+                    "lng": lng,
+                    "off_route_km": round(best_d, 2),
+                    "route_km": round(km[best_i], 1),
+                    "drive_s_from_start": int(cum[best_i]),
+                    "minutes_before_limit": int((stop["at_drive_s"] - cum[best_i]) / 60),
+                })
+        # Prefer the latest stop before the limit (uses the most driving time)
+        areas.sort(key=lambda a: a["minutes_before_limit"])
+        return {
+            **stop,
+            "lat": points[end_i][0],
+            "lng": points[end_i][1],
+            "km": round(km[end_i], 1),
+            "areas": areas[:5],
+        }
+
+    return list(await asyncio.gather(*[one(s) for s in stops]))

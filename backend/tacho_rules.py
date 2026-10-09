@@ -264,6 +264,7 @@ def plan_breaks(drive_s: float, status: Optional[Dict[str, Any]]) -> Dict[str, A
     breaks = 0
     daily_rests = 0
     total_stop = 0
+    stops: List[Dict[str, Any]] = []
     while left > 0:
         chunk = min(left, rem_cont, rem_day)
         left -= chunk
@@ -274,11 +275,13 @@ def plan_breaks(drive_s: float, status: Optional[Dict[str, Any]]) -> Dict[str, A
         if rem_day <= 0:
             daily_rests += 1
             total_stop += DAILY_REST_REGULAR
+            stops.append({"type": "daily_rest", "at_drive_s": int(drive_s - left), "duration_s": DAILY_REST_REGULAR})
             rem_day = DAILY_LIMIT
             rem_cont = CONT_LIMIT
         elif rem_cont <= 0:
             breaks += 1
             total_stop += BREAK_FULL
+            stops.append({"type": "break", "at_drive_s": int(drive_s - left), "duration_s": BREAK_FULL})
             rem_cont = CONT_LIMIT
     return {
         "breaks_45min": breaks,
@@ -286,4 +289,5 @@ def plan_breaks(drive_s: float, status: Optional[Dict[str, Any]]) -> Dict[str, A
         "stop_time_s": int(total_stop),
         "total_with_stops_s": int(drive_s + total_stop),
         "fits_remaining_today": drive_s <= (status["remaining_driving_now_s"] if status else CONT_LIMIT),
+        "stops": stops,
     }

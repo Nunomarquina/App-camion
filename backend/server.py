@@ -7,6 +7,7 @@ import os
 import logging
 import uuid
 from tacho_rules import compute_status, plan_breaks
+from detection_learning import analyze, default_profile
 import mapbox_routing
 import bcrypt
 import jwt
@@ -144,6 +145,8 @@ class TachoEvent(TachoEventIn):
     started_at: datetime
     ended_at: Optional[datetime] = None
     duration_s: Optional[int] = None
+    detected_state: Optional[TachoState] = None
+    card_verified: Optional[bool] = None
 
 
 
@@ -357,15 +360,36 @@ async def delete_event(event_id: str, user=Depends(get_current_user)):
 class GPSSampleIn(BaseModel):
     lat: float
     lng: float
-    speed_kmh: float
+    speed_kmh: float = Field(ge=0, le=250)
+    ts: Optional[datetime] = None
+
+
+async def _get_profile(user_id: str) -> dict:
+    p = await db.detection_profiles.find_one({"user_id": user_id}, {"_id": 0})
+    return p or {"user_id": user_id, **default_profile()}
+
+
+async def _store_samples(user_id: str, samples: List[GPSSampleIn]):
+    now = now_utc()
+    docs = [{
+        "user_id": user_id,
+        "ts": s.ts or now,
+        "speed_kmh": s.speed_kmh,
+        "lat": s.lat,
+        "lng": s.lng,
+    } for s in samples]
+    if docs:
+        await db.gps_samples.insert_many(docs)
 
 
 @api_router.post("/tacho/gps-sample")
 async def gps_sample(body: GPSSampleIn, user=Depends(get_current_user)):
-    """GPS auto-detect driving/rest. Creates an unconfirmed event if state changes."""
+    """GPS auto-detect driving/rest with the driver's learned threshold.
+    Creates an unconfirmed event if state changes."""
     now = now_utc()
-    # Threshold: moving >5 km/h = DRIVING, else REST
-    detected: TachoState = "DRIVING" if body.speed_kmh > 5 else "REST"
+    profile = await _get_profile(user["id"])
+    await _store_samples(user["id"], [body])
+    detected: TachoState = "DRIVING" if body.speed_kmh > profile["speed_threshold_kmh"] else "REST"
     latest = await db.tacho_events.find_one(
         {"user_id": user["id"]}, {"_id": 0}, sort=[("started_at", -1)]
     )
@@ -375,6 +399,7 @@ async def gps_sample(body: GPSSampleIn, user=Depends(get_current_user)):
             "id": str(uuid.uuid4()),
             "user_id": user["id"],
             "state": detected,
+            "detected_state": detected,
             "source": "GPS_AUTO",
             "confirmed": False,
             "lat": body.lat,
@@ -387,6 +412,26 @@ async def gps_sample(body: GPSSampleIn, user=Depends(get_current_user)):
         }
         await db.tacho_events.insert_one(doc)
     return await _compute_status(user["id"])
+
+
+class GPSBatchIn(BaseModel):
+    samples: List[GPSSampleIn] = Field(max_length=500)
+
+
+@api_router.post("/tacho/gps-batch")
+async def gps_batch(body: GPSBatchIn, user=Depends(get_current_user)):
+    """Raw speed samples used to learn the movement threshold."""
+    await _store_samples(user["id"], body.samples)
+    return {"stored": len(body.samples)}
+
+
+def _public_profile(p: dict) -> dict:
+    return {k: v for k, v in p.items() if k not in ("_id", "user_id")}
+
+
+@api_router.get("/tacho/detection-profile")
+async def detection_profile(user=Depends(get_current_user)):
+    return _public_profile(await _get_profile(user["id"]))
 
 
 class ConfirmIn(BaseModel):
@@ -402,6 +447,8 @@ async def confirm_event(event_id: str, body: ConfirmIn, user=Depends(get_current
     if body.state and body.state != evt["state"]:
         update["state"] = body.state
         update["note"] = f"Corregido manualmente (GPS detectó {evt['state']})"
+        if evt.get("source") == "GPS_AUTO" and not evt.get("detected_state"):
+            update["detected_state"] = evt["state"]
     await db.tacho_events.update_one({"id": event_id}, {"$set": update})
     evt.update(update)
     return TachoEvent(**evt)
@@ -412,24 +459,117 @@ class CardSimIn(BaseModel):
     pin: Optional[str] = None
 
 
+class CardActivityIn(BaseModel):
+    state: TachoState
+    started_at: datetime
+    ended_at: datetime
+
+
+class CardActivitiesIn(BaseModel):
+    activities: List[CardActivityIn] = Field(min_length=1, max_length=200)
+
+
+CARD_WINDOW_DAYS = 7
+
+
+@api_router.post("/tacho/card-activities", status_code=201)
+async def add_card_activities(body: CardActivitiesIn, user=Depends(get_current_user)):
+    """Store activities as recorded by the tachograph card (reference data)."""
+    now = now_utc()
+    docs = []
+    for a in body.activities:
+        s = a.started_at if a.started_at.tzinfo else a.started_at.replace(tzinfo=timezone.utc)
+        e = a.ended_at if a.ended_at.tzinfo else a.ended_at.replace(tzinfo=timezone.utc)
+        if e <= s:
+            raise HTTPException(400, "El fin debe ser posterior al inicio")
+        if e > now + timedelta(minutes=1):
+            raise HTTPException(400, "No se pueden registrar actividades futuras")
+        overlap = await db.card_activities.find_one({
+            "user_id": user["id"],
+            "started_at": {"$lt": e.replace(tzinfo=None)},
+            "ended_at": {"$gt": s.replace(tzinfo=None)},
+        })
+        if overlap:
+            raise HTTPException(409, "Se solapa con otra actividad de la tarjeta")
+        docs.append({"id": str(uuid.uuid4()), "user_id": user["id"], "state": a.state,
+                     "started_at": s, "ended_at": e, "created_at": now})
+    await db.card_activities.insert_many(docs)
+    return {"stored": len(docs)}
+
+
+@api_router.get("/tacho/card-activities")
+async def list_card_activities(user=Depends(get_current_user)):
+    since = now_utc() - timedelta(days=CARD_WINDOW_DAYS)
+    cursor = db.card_activities.find(
+        {"user_id": user["id"], "ended_at": {"$gte": since}}, {"_id": 0, "user_id": 0}
+    ).sort("started_at", -1)
+    return [a async for a in cursor]
+
+
 @api_router.post("/tacho/card-sim")
 async def card_sim(body: CardSimIn, user=Depends(get_current_user)):
-    """Simulate tachograph card insertion. Confirms all unconfirmed events in the last 24h."""
+    """Read (simulated) tachograph card, compare with GPS detections, learn
+    detection parameters and confirm/correct GPS events."""
     now = now_utc()
-    one_day_ago = now - timedelta(days=1)
-    result = await db.tacho_events.update_many(
-        {
-            "user_id": user["id"],
-            "confirmed": False,
-            "started_at": {"$gte": one_day_ago},
-        },
-        {"$set": {"confirmed": True, "source": "CARD"}},
+    since = now - timedelta(days=CARD_WINDOW_DAYS)
+    since_naive = since.replace(tzinfo=None)
+
+    card_docs = [a async for a in db.card_activities.find(
+        {"user_id": user["id"], "ended_at": {"$gte": since_naive}}, {"_id": 0})]
+    events = [e async for e in db.tacho_events.find(
+        {"user_id": user["id"], "$or": [{"ended_at": None}, {"ended_at": {"$gte": since_naive}}]},
+        {"_id": 0}).sort("started_at", 1)]
+
+    card_is_real = len(card_docs) > 0
+    if card_is_real:
+        card_acts = [{"state": a["state"], "start": _as_utc(a["started_at"]), "end": _as_utc(a["ended_at"])}
+                     for a in card_docs]
+    else:
+        # Simulated card: timeline as confirmed/corrected by the driver
+        card_acts = [{"state": e["state"], "start": _as_utc(e["started_at"]),
+                      "end": _as_utc(e["ended_at"]) if e.get("ended_at") else now} for e in events]
+
+    gps_events = [e for e in events if e.get("source") == "GPS_AUTO"]
+    samples = [s async for s in db.gps_samples.find(
+        {"user_id": user["id"], "ts": {"$gte": since_naive}}, {"_id": 0})]
+    profile = await _get_profile(user["id"])
+
+    result = analyze(gps_events, card_acts, samples, profile, now, card_is_real)
+
+    for c in result["corrections"]:
+        await db.tacho_events.update_one({"id": c["id"]}, {"$set": {
+            "state": c["to"], "confirmed": True, "card_verified": True,
+            "detected_state": c["from"],
+            "note": f"Corregido por tarjeta (GPS detectó {c['from']})",
+        }})
+    if result["verified_ids"]:
+        await db.tacho_events.update_many({"id": {"$in": result["verified_ids"]}},
+                                          {"$set": {"confirmed": True, "card_verified": True}})
+    # Remaining pending events in last 24h are confirmed by the card read
+    res = await db.tacho_events.update_many(
+        {"user_id": user["id"], "confirmed": False,
+         "started_at": {"$gte": (now - timedelta(days=1)).replace(tzinfo=None)}},
+        {"$set": {"confirmed": True}},
     )
+
+    new_profile = {**result["profile"], "user_id": user["id"]}
+    await db.detection_profiles.update_one({"user_id": user["id"]}, {"$set": new_profile}, upsert=True)
+
+    report = result["report"]
+    confirmed = report["verified"] + report["corrections"] + res.modified_count
+    acc = f"{round(report['accuracy'] * 100)}%" if report["accuracy"] is not None else "—"
     return {
         "card_id": body.card_id,
-        "confirmed_events": result.modified_count,
-        "message": f"Tarjeta {body.card_id} leída. {result.modified_count} eventos confirmados.",
+        "confirmed_events": confirmed,
+        "report": report,
+        "profile": _public_profile(new_profile),
+        "message": f"Tarjeta {body.card_id} leída. Precisión GPS {acc}. "
+                   f"{report['corrections']} corregidos, {confirmed} confirmados.",
     }
+
+
+def _as_utc(dt: datetime) -> datetime:
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
 
 
 
@@ -444,6 +584,7 @@ class RouteIn(BaseModel):
     destination: LatLng
     vehicle_id: Optional[str] = None
     tz_offset_min: int = 0
+    use_current_hours: bool = True
 
 
 @api_router.get("/geocode")
@@ -481,8 +622,12 @@ async def calculate_route(body: RouteIn, user=Depends(get_current_user)):
             warnings.append("Ancho >2.55m: transporte especial, requiere permiso.")
     warnings.extend(route["violations"])
 
-    status = await _compute_status(user["id"], body.tz_offset_min)
+    status = await _compute_status(user["id"], body.tz_offset_min) if body.use_current_hours else None
     plan = plan_breaks(route["truck_duration_s"], status)
+
+    # Locate each mandatory stop on the route and find rest areas before it
+    points, cum = route.pop("_points"), route.pop("_cum")
+    stops = await mapbox_routing.rest_areas_for_stops(points, cum, plan["stops"])
 
     return {
         **route,
@@ -490,7 +635,9 @@ async def calculate_route(body: RouteIn, user=Depends(get_current_user)):
         "warnings": warnings,
         "vehicle_restricted": bool(route["violations"]),
         "vehicle_applied": bool(vehicle),
+        "used_current_hours": body.use_current_hours,
         "plan": plan,
+        "stops": stops,
     }
 
 
@@ -511,6 +658,10 @@ async def startup_db():
     await db.users.create_index("email", unique=True)
     await db.vehicles.create_index("user_id")
     await db.tacho_events.create_index([("user_id", 1), ("started_at", -1)])
+    await db.gps_samples.create_index([("user_id", 1), ("ts", -1)])
+    await db.gps_samples.create_index("ts", expireAfterSeconds=30 * 24 * 3600)
+    await db.card_activities.create_index([("user_id", 1), ("started_at", -1)])
+    await db.detection_profiles.create_index("user_id", unique=True)
     logger.info("Database indexes ready.")
 
 

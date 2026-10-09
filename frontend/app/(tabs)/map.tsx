@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   ScrollView,
   Platform,
+  Switch,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from "@/src/components/truck-map";
@@ -45,6 +46,22 @@ type RouteOut = {
     total_with_stops_s: number;
     fits_remaining_today: boolean;
   };
+  stops: {
+    type: "break" | "daily_rest";
+    at_drive_s: number;
+    lat: number | null;
+    lng: number | null;
+    km: number | null;
+    areas: {
+      id: string;
+      name: string;
+      type: string;
+      lat: number;
+      lng: number;
+      route_km: number;
+      minutes_before_limit: number;
+    }[];
+  }[];
 };
 type Place = { id: string; name: string; full_address: string; lat: number; lng: number };
 
@@ -76,7 +93,36 @@ export default function MapScreen() {
   const [results, setResults] = useState<Place[]>([]);
   const [searching, setSearching] = useState(false);
   const [showSteps, setShowSteps] = useState(false);
+  const [gpsOrigin, setGpsOrigin] = useState<Pt | null>(null);
+  const [originMode, setOriginMode] = useState<"gps" | "custom">("gps");
+  const [originQuery, setOriginQuery] = useState("");
+  const [searchField, setSearchField] = useState<"origin" | "destination">("destination");
+  const [useCurrentHours, setUseCurrentHours] = useState(true);
   const styles = useStyles();
+
+  function setCustomOrigin(p: Pt, label: string) {
+    setOrigin(p);
+    setOriginMode("custom");
+    setOriginQuery(label);
+    setUseCurrentHours(false);
+    setRoute(null);
+  }
+
+  function useMyLocation() {
+    setOriginMode("gps");
+    setOriginQuery("");
+    setUseCurrentHours(true);
+    setRoute(null);
+    if (gpsOrigin) {
+      setOrigin(gpsOrigin);
+      mapRef.current?.animateToRegion(
+        { latitude: gpsOrigin.lat, longitude: gpsOrigin.lng, latitudeDelta: 0.5, longitudeDelta: 0.5 },
+        800,
+      );
+    } else {
+      setOrigin({ lat: 40.4168, lng: -3.7038 });
+    }
+  }
 
   const loadVehicle = useCallback(async () => {
     try {
@@ -108,7 +154,8 @@ export default function MapScreen() {
           accuracy: Location.Accuracy.Balanced,
         });
         const pt = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-        setOrigin(pt);
+        setGpsOrigin(pt);
+        setOrigin((o) => o ?? pt);
         setGpsStatus("GPS activo");
         mapRef.current?.animateToRegion(
           {
@@ -141,6 +188,7 @@ export default function MapScreen() {
           destination: { ...destination, speed_kmh: 0 },
           vehicle_id: vehicle?.id,
           tz_offset_min: -new Date().getTimezoneOffset(),
+          use_current_hours: useCurrentHours,
         }),
       });
       setRoute(r);
@@ -159,14 +207,17 @@ export default function MapScreen() {
     }
   }
 
-  async function searchDestination() {
-    if (destQuery.trim().length < 2) return;
+  async function searchPlaces(field: "origin" | "destination") {
+    const q = (field === "origin" ? originQuery : destQuery).trim();
+    if (q.length < 2) return;
+    setSearchField(field);
     setError(null);
     setSearching(true);
     try {
-      const near = origin ? `&lat=${origin.lat}&lng=${origin.lng}` : "";
+      const ref = gpsOrigin || origin;
+      const near = ref ? `&lat=${ref.lat}&lng=${ref.lng}` : "";
       const data = await api<{ results: Place[] }>(
-        `/geocode?q=${encodeURIComponent(destQuery.trim())}${near}`,
+        `/geocode?q=${encodeURIComponent(q)}${near}`,
       );
       if (data.results.length === 0) setError("Dirección no encontrada");
       setResults(data.results);
@@ -179,9 +230,13 @@ export default function MapScreen() {
 
   function pickPlace(p: Place) {
     setResults([]);
-    setDestQuery(p.name);
     setRoute(null);
-    setDestination({ lat: p.lat, lng: p.lng });
+    if (searchField === "origin") {
+      setCustomOrigin({ lat: p.lat, lng: p.lng }, p.name);
+    } else {
+      setDestQuery(p.name);
+      setDestination({ lat: p.lat, lng: p.lng });
+    }
     mapRef.current?.animateToRegion(
       { latitude: p.lat, longitude: p.lng, latitudeDelta: 0.5, longitudeDelta: 0.5 },
       800,
@@ -221,8 +276,15 @@ export default function MapScreen() {
         showsUserLocation={Platform.OS !== "web"}
         onPress={(e) => {
           const { latitude, longitude } = e.nativeEvent.coordinate;
-          if (tapMode === "origin") setOrigin({ lat: latitude, lng: longitude });
-          else setDestination({ lat: latitude, lng: longitude });
+          if (tapMode === "origin") {
+            setCustomOrigin(
+              { lat: latitude, lng: longitude },
+              `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`,
+            );
+          } else {
+            setDestination({ lat: latitude, lng: longitude });
+            setRoute(null);
+          }
         }}
       >
         {origin && (
@@ -239,6 +301,26 @@ export default function MapScreen() {
             title="Destino"
           />
         )}
+        {route?.stops.map((s, si) => (
+          <Fragment key={`stop-${si}`}>
+            {s.lat != null && s.lng != null && (
+              <Marker
+                coordinate={{ latitude: s.lat, longitude: s.lng }}
+                pinColor={colors.error}
+                title={s.type === "daily_rest" ? "Límite: descanso diario" : "Límite: pausa 45 min"}
+              />
+            )}
+            {s.areas.map((a) => (
+              <Marker
+                key={a.id}
+                coordinate={{ latitude: a.lat, longitude: a.lng }}
+                pinColor={colors.info}
+                title={a.name}
+                description={`${a.type} · km ${a.route_km}`}
+              />
+            ))}
+          </Fragment>
+        ))}
         {route && (
           <Polyline
             coordinates={route.polyline.map(([lat, lng]) => ({
@@ -253,8 +335,37 @@ export default function MapScreen() {
 
       {/* Top search bar */}
       <View style={[styles.topBar, { top: insets.top + spacing.sm }]}>
+        <View style={[styles.searchRow, { marginBottom: spacing.xs }]}>
+          <View style={[styles.dot, { backgroundColor: colors.success }]} />
+          <TextInput
+            testID="origin-input"
+            style={styles.searchInput}
+            placeholder={originMode === "gps" ? "Salida: mi ubicación actual" : "Lugar de salida"}
+            placeholderTextColor={originMode === "gps" ? colors.success : colors.muted}
+            value={originQuery}
+            onChangeText={setOriginQuery}
+            onSubmitEditing={() => searchPlaces("origin")}
+            returnKeyType="search"
+          />
+          {originMode === "custom" && (
+            <Pressable testID="origin-use-gps-btn" onPress={useMyLocation} style={styles.gpsBtn} hitSlop={6}>
+              <Icon name="crosshairs-gps" size={20} color={colors.success} />
+            </Pressable>
+          )}
+          <Pressable
+            testID="origin-search-btn"
+            onPress={() => searchPlaces("origin")}
+            style={[styles.searchBtn, { backgroundColor: colors.surfaceTertiary }]}
+          >
+            {searching && searchField === "origin" ? (
+              <ActivityIndicator size="small" color={colors.onSurface} />
+            ) : (
+              <Icon name="magnify" size={20} color={colors.onSurface} />
+            )}
+          </Pressable>
+        </View>
         <View style={styles.searchRow}>
-          <Icon name="magnify" size={22} color={colors.muted} />
+          <View style={[styles.dot, { backgroundColor: colors.brandPrimary }]} />
           <TextInput
             testID="dest-input"
             style={styles.searchInput}
@@ -262,15 +373,15 @@ export default function MapScreen() {
             placeholderTextColor={colors.muted}
             value={destQuery}
             onChangeText={setDestQuery}
-            onSubmitEditing={searchDestination}
+            onSubmitEditing={() => searchPlaces("destination")}
             returnKeyType="search"
           />
           <Pressable
             testID="dest-search-btn"
-            onPress={searchDestination}
+            onPress={() => searchPlaces("destination")}
             style={styles.searchBtn}
           >
-            {searching ? (
+            {searching && searchField === "destination" ? (
               <ActivityIndicator size="small" color={colors.onBrandPrimary} />
             ) : (
               <Icon name="arrow-right" size={20} color={colors.onBrandPrimary} />
@@ -357,6 +468,27 @@ export default function MapScreen() {
           </Pressable>
         </View>
 
+        <View style={styles.hoursRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.hoursTitle}>Usar mis horas disponibles</Text>
+            <Text style={styles.hoursSub} testID="hours-mode-text">
+              {useCurrentHours
+                ? "Pausas según tu tacógrafo actual"
+                : "Ruta futura: empiezas descansado (4h30 / 9h)"}
+            </Text>
+          </View>
+          <Switch
+            testID="use-current-hours-switch"
+            value={useCurrentHours}
+            onValueChange={(v) => {
+              setUseCurrentHours(v);
+              setRoute(null);
+            }}
+            trackColor={{ true: colors.brandPrimary, false: colors.surfaceTertiary }}
+            thumbColor={colors.onSurface}
+          />
+        </View>
+
         <Pressable
           testID="calc-route-btn"
           onPress={calculateRoute}
@@ -426,6 +558,52 @@ export default function MapScreen() {
                 ))}
               </View>
             )}
+            {route.stops.length > 0 && (
+              <View style={styles.stopsBlock} testID="route-stops">
+                <Text style={styles.stopsTitle}>PARADAS OBLIGATORIAS</Text>
+                {route.stops.map((s, si) => (
+                  <View key={si} style={styles.stopCard} testID={`route-stop-${si}`}>
+                    <View style={styles.stopHead}>
+                      <Icon
+                        name={s.type === "daily_rest" ? "bed-outline" : "coffee-outline"}
+                        size={18}
+                        color={colors.error}
+                      />
+                      <Text style={styles.stopTitle}>
+                        {s.type === "daily_rest" ? "Descanso diario 11h" : "Pausa 45 min"} · límite en{" "}
+                        {fmtMin(s.at_drive_s / 60)}
+                        {s.km != null ? ` (km ${Math.round(s.km)})` : ""}
+                      </Text>
+                    </View>
+                    {s.areas.length === 0 ? (
+                      <Text style={styles.noAreas}>Sin áreas de descanso encontradas junto a la ruta en ese tramo.</Text>
+                    ) : (
+                      s.areas.map((a, ai) => (
+                        <Pressable
+                          key={a.id}
+                          testID={`stop-${si}-area-${ai}`}
+                          onPress={() =>
+                            mapRef.current?.animateToRegion(
+                              { latitude: a.lat, longitude: a.lng, latitudeDelta: 0.05, longitudeDelta: 0.05 },
+                              600,
+                            )
+                          }
+                          style={styles.areaRow}
+                        >
+                          <Icon name="parking" size={18} color={colors.info} />
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.areaName} numberOfLines={1}>{a.name}</Text>
+                            <Text style={styles.areaSub} numberOfLines={1}>
+                              {a.type} · km {Math.round(a.route_km)} · {a.minutes_before_limit} min antes del límite
+                            </Text>
+                          </View>
+                        </Pressable>
+                      ))
+                    )}
+                  </View>
+                ))}
+              </View>
+            )}
             <Pressable testID="toggle-steps-btn" onPress={() => setShowSteps((s) => !s)} style={styles.stepsToggle}>
               <Text style={styles.stepsToggleText}>
                 {showSteps ? "Ocultar indicaciones" : `Ver indicaciones (${route.steps.length})`}
@@ -468,6 +646,24 @@ export default function MapScreen() {
 
 const useStyles = makeStyles((c) => ({
   container: { flex: 1, backgroundColor: c.surface },
+  gpsBtn: { width: 36, height: 36, alignItems: "center", justifyContent: "center" },
+  hoursRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    marginBottom: spacing.md,
+  },
+  hoursTitle: { color: c.onSurface, fontSize: typography.sm, fontWeight: "700" },
+  hoursSub: { color: c.muted, fontSize: 11, marginTop: 2 },
+  stopsBlock: { marginTop: spacing.md, gap: spacing.sm },
+  stopsTitle: { color: c.muted, fontSize: 10, fontWeight: "700", letterSpacing: 1 },
+  stopCard: { backgroundColor: c.surfaceTertiary, borderRadius: radius.md, padding: spacing.md, gap: spacing.xs },
+  stopHead: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  stopTitle: { color: c.onSurface, fontSize: typography.sm, fontWeight: "800", flex: 1 },
+  noAreas: { color: c.muted, fontSize: 11 },
+  areaRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, minHeight: 44, paddingVertical: spacing.xs },
+  areaName: { color: c.onSurfaceSecondary, fontSize: typography.sm, fontWeight: "700" },
+  areaSub: { color: c.muted, fontSize: 11 },
   results: {
     marginTop: spacing.xs,
     backgroundColor: c.surfaceSecondary,

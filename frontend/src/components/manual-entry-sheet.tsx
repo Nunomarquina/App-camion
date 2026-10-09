@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Modal, View, Text, TextInput, Pressable, ActivityIndicator, Platform } from "react-native";
+import { Modal, View, Text, TextInput, Pressable, ActivityIndicator, Platform, Switch } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Icon from "@react-native-vector-icons/material-design-icons";
@@ -29,6 +29,7 @@ export function ManualEntrySheet({
   const [hoursAgo, setHoursAgo] = useState("5");
   const [minutes, setMinutes] = useState("120");
   const [saving, setSaving] = useState(false);
+  const [asCard, setAsCard] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function save() {
@@ -47,15 +48,24 @@ export function ManualEntrySheet({
     const end = new Date(start.getTime() + m * 60 * 1000);
     setSaving(true);
     try {
-      await api("/tacho/events/manual", {
-        method: "POST",
-        body: JSON.stringify({
-          state,
-          started_at: start.toISOString(),
-          ended_at: end.toISOString(),
-          note: "Entrada simulada",
-        }),
-      });
+      if (asCard) {
+        await api("/tacho/card-activities", {
+          method: "POST",
+          body: JSON.stringify({
+            activities: [{ state, started_at: start.toISOString(), ended_at: end.toISOString() }],
+          }),
+        });
+      } else {
+        await api("/tacho/events/manual", {
+          method: "POST",
+          body: JSON.stringify({
+            state,
+            started_at: start.toISOString(),
+            ended_at: end.toISOString(),
+            note: "Entrada simulada",
+          }),
+        });
+      }
       onSaved();
       onClose();
     } catch (e: any) {
@@ -119,6 +129,21 @@ export function ManualEntrySheet({
               </Pressable>
             ))}
           </View>
+          <View style={styles.cardRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.cardTitle}>Registrar como dato de tarjeta</Text>
+              <Text style={styles.cardSub}>
+                Referencia para comparar con el GPS al leer la tarjeta (no cambia tu historial)
+              </Text>
+            </View>
+            <Switch
+              testID="manual-as-card-switch"
+              value={asCard}
+              onValueChange={setAsCard}
+              trackColor={{ true: colors.brandPrimary, false: colors.surfaceTertiary }}
+              thumbColor={colors.onSurface}
+            />
+          </View>
           {error && <Text style={styles.error} testID="manual-entry-error">{error}</Text>}
           <Pressable testID="manual-entry-save" onPress={save} disabled={saving} style={styles.save}>
             {saving ? <ActivityIndicator color={colors.onBrandPrimary} /> : <Text style={styles.saveText}>AÑADIR ENTRADA</Text>}
@@ -171,6 +196,9 @@ const useStyles = makeStyles((c) => ({
   preset: { flex: 1, minHeight: 40, borderRadius: radius.md, backgroundColor: c.surfaceTertiary, alignItems: "center", justifyContent: "center" },
   presetText: { color: c.onSurfaceSecondary, fontWeight: "700", fontSize: typography.sm },
   error: { color: c.error, marginTop: spacing.md, fontSize: typography.sm },
+  cardRow: { flexDirection: "row", alignItems: "center", gap: spacing.md, marginTop: spacing.lg },
+  cardTitle: { color: c.onSurface, fontSize: typography.base, fontWeight: "700" },
+  cardSub: { color: c.muted, fontSize: 11, marginTop: 2 },
   save: { backgroundColor: c.brandPrimary, borderRadius: radius.md, paddingVertical: spacing.lg, alignItems: "center", marginTop: spacing.lg },
   saveText: { color: c.onBrandPrimary, fontWeight: "800", fontSize: typography.lg, letterSpacing: 1 },
 }));

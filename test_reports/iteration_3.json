@@ -1,0 +1,33 @@
+{
+  "summary": "Iteration 3 full test pass. Backend: 54/54 pytest cases pass (12 new in test_iteration3.py plus 42 regression from iter1+iter2). New coverage: default detection-profile (speed_threshold_kmh=5, hold_s=30, history=[]), /api/tacho/gps-batch stores samples, /api/tacho/card-activities (create/list, 409 overlap, 400 future, 400 end<=start), /api/tacho/card-sim simulated (card_is_real=false, full report keys, profile persistence), card-sim learning (12 fast samples at 60km/h inside card DRIVING + 12 at 7km/h inside card REST ⇒ threshold_after>threshold_before, samples_used>=20, profile persists via detection-profile, and subsequent gps-sample at 6km/h is REST when threshold>=7), correction semantics (GPS_AUTO DRIVING + overlapping card REST ⇒ state corrected to REST, detected_state='DRIVING' kept, card_verified=true, note contains 'Corregido por tarjeta'), /api/routes/calculate Madrid->Barcelona with use_current_hours=false (plan.stops[0].at_drive_s==16200, response.stops has lat/lng/km and areas[] with name/type/lat/lng/route_km/minutes_before_limit in [0..40] and off_route_km<=1.5), no _points/_cum leakage, used_current_hours flag honoured, Zaragoza->Barcelona (~300km) has breaks_45min=0 and empty stops. Frontend (mobile 390x844): Ruta origin-input placeholder 'Salida: mi ubicación actual', Zaragoza search → search-result-0 → origin-use-gps-btn appears, use-current-hours-switch flips off (hours-mode-text now 'Ruta futura: empiezas descansado (4h30 / 9h)'), Zaragoza->Barcelona (308km / 3h 43m) has NO route-stops block as expected; Madrid(GPS)->Barcelona WITH use-current-hours OFF renders route-stops with route-stop-0 ('Pausa 45 min · límite en 4h 30m (km 393)') and 4 stop-0-area-0..3 real Mapbox rest areas (Área de descanso · km 345-386 · 4-31 min antes del límite). Tacógrafo: gps-learned-profile shows 'Aprendido: >5 km/h · 30s de confirmación'; card-sim-btn opens card-report-sheet with card-report-accuracy '—', card-report-corrections '0', card-report-threshold '5 km/h → 5 km/h', card-report-hold '30s → 30s'; card-report-close closes sheet. Historial manual-entry-sheet shows manual-as-card-switch 'Registrar como dato de tarjeta — Referencia para comparar con el GPS al leer la tarjeta (no cambia tu historial)'; saving REST 45m 5h ago with switch ON keeps Historial at 0 rows ('Sin registros de conducción todavía') — correctly stored as card reference only. No red screens, no crashing console errors.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration3.py",
+    "/app/backend/tests/test_iteration2.py",
+    "/app/backend/tests/test_backend_full.py",
+    "/app/test_reports/pytest/iteration3.xml",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now ~670 lines; consider splitting into routers/{auth,vehicles,tacho,routes}.py — tacho module alone owns gps-sample/batch, events/manual, card-activities, card-sim, detection-profile, status, confirm and would be cleaner isolated.",
+    "detection_learning._learn_threshold scans speed thresholds 1.0..20.0 in 0.5 steps per card-sim call. Fine for current sample sizes but O(N·M) where N=samples and M=40 — if GPS batch sizes grow beyond ~5k samples this should move to sorted-cumulative counts (O((N+M)log N)).",
+    "mapbox_routing.rest_areas_for_stops opens one AsyncClient per stop and makes 2 Mapbox Search Box category calls per stop. For routes with many breaks (e.g. 3+) this can hit Mapbox rate limits; consider reusing a single httpx.AsyncClient across stops and batching.",
+    "card-sim 'confirm pending events in last 24h' uses started_at>=now-1d (naive) matching timezone-naive stored dates; works because insertions store UTC-naïve, but server.py mixes aware (now_utc) and naive (replace(tzinfo=None)) datetimes in queries — risky for future ops people. Document or normalise."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration3.py"
+  ],
+  "success_rate": {"backend": "100% (54/54)", "frontend": "100% of requested flows"},
+  "seed_data_creation": "Each pytest and UI run registers fresh disposable users prefixed it3_/ui3*. No modification to driver@test.com or iter1/iter2 data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend URL env is EXPO_PUBLIC_BACKEND_URL. Run pytest with `-o addopts=''` for serial (default addopts uses -n2 which is still safe for new tests). Mapbox Search Box API is live (rest-area/service-area categories), so test_madrid_barcelona_stops_with_areas depends on upstream availability — a Mapbox outage would cause 'areas:[]' but stops would still be present. Known mocked: /api/tacho/card-sim 'card reading' still simulates by consuming /tacho/card-activities (or the user's confirmed timeline when none). Card-sim correction path requires the overlapping card activity to END after the GPS_AUTO event's started_at — see TestCardSimLearning.test_correction_sets_card_verified_and_note which inserts a 3-second sleep so now>evt_started. Auth token is stored via expo-secure-store (not AsyncStorage/localStorage) so pulling it via page.evaluate from the browser side returns null; use direct backend requests from Python with Bearer token obtained via /api/auth/register instead.",
+  "rca_of_issue": "N/A - no bugs found in iteration 3."
+}
