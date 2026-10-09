@@ -19,8 +19,12 @@ Mapbox (pendiente: build nativo) · Todas las funciones · UE 561/2006 · Email/
 - Simulated card read confirms pending events
 - Truck route calc (SIMULATED straight-line, speed cap + dimension penalties + warnings)
 
+## Iteration 2 (2026-10-09)
+- Real truck routing via Mapbox Directions (max_height/width/weight from active vehicle), Mapbox geocoding search, truck time capped at vehicle max speed, Spanish turn-by-turn steps, break plan for trip
+- Full EU 561 rules (backend/tacho_rules.py): split break 15→30 (order enforced), 10h extension max 2/week, daily rest 11h/9h reduced (max 3)/split 3+9 within 24h, weekly rest due 6×24h, 56h week, 90h two weeks, alerts
+- Simulated past tachograph entries (Historial → Simular), delete entries
+
 ## Backlog
-- P0: Real truck routing (Mapbox/HERE/GraphHopper truck profile) with real road polylines
-- P1: Breaks split 15+30, 10h days 2x/week, biweekly 90h, weekly rest; card vs GPS accuracy stats
-- P1: Background GPS tracking (requires native build)
+- P0: Card vs GPS accuracy comparison to tune auto-detection
+- P1: Background GPS tracking (requires native build); ADR tunnel categories
 - P2: PDF export of logbook, fleet/company dashboard

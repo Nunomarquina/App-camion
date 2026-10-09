@@ -20,21 +20,44 @@ import { colors, spacing, radius, typography, makeStyles } from "@/src/theme";
 import { formatHMS, formatHM } from "@/src/format";
 
 type TachoState = "DRIVING" | "WORK" | "REST" | "AVAILABLE";
+type Alert = { level: "error" | "warning" | "info"; text: string };
 type Status = {
   current_state: TachoState;
   continuous_driving_s: number;
-  daily_driving_s: number;
-  weekly_driving_s: number;
-  daily_rest_s: number;
   remaining_continuous_driving_s: number;
+  split_break_first_done: boolean;
+  break_in_progress: {
+    elapsed_s: number;
+    target_s: number;
+    remaining_s: number;
+    is_second_part: boolean;
+    first_part_reached: boolean;
+  } | null;
+  daily_driving_s: number;
+  daily_limit_s: number;
   remaining_daily_driving_s: number;
+  remaining_daily_with_extension_s: number;
+  extensions_used_week: number;
+  extension_available: boolean;
+  in_extension: boolean;
+  weekly_driving_s: number;
+  biweekly_driving_s: number;
   remaining_weekly_driving_s: number;
+  reduced_daily_rests_used: number;
+  daily_rest_split_first_done: boolean;
+  required_daily_rest_s: number;
+  daily_rest_start_by_s: number | null;
+  weekly_rest_due_s: number | null;
+  remaining_driving_now_s: number;
   needs_break: boolean;
   needs_daily_rest: boolean;
   violation: boolean;
+  alerts: Alert[];
   last_event_at: string | null;
   message: string;
 };
+
+const TZ = -new Date().getTimezoneOffset();
 
 const STATE_INFO: Record<
   TachoState,
@@ -59,7 +82,7 @@ export default function TachoScreen() {
 
   const load = useCallback(async () => {
     try {
-      const s = await api<Status>("/tacho/status");
+      const s = await api<Status>(`/tacho/status?tz_offset_min=${TZ}`);
       setStatus(s);
     } catch (e) {
       // silent
@@ -127,8 +150,14 @@ export default function TachoScreen() {
     100,
     (status.continuous_driving_s / (4.5 * 3600)) * 100,
   );
-  const dailyPct = Math.min(100, (status.daily_driving_s / (9 * 3600)) * 100);
+  const dailyPct = Math.min(100, (status.daily_driving_s / status.daily_limit_s) * 100);
   const weeklyPct = Math.min(100, (status.weekly_driving_s / (56 * 3600)) * 100);
+  const biweeklyPct = Math.min(100, (status.biweekly_driving_s / (90 * 3600)) * 100);
+  const bip = status.break_in_progress;
+  const alertColor = (l: Alert["level"]) =>
+    l === "error" ? colors.error : l === "warning" ? colors.warning : colors.info;
+  const deadline = (s: number | null) =>
+    s === null ? "—" : s < 0 ? `Vencido hace ${formatHM(-s)}` : `en ${formatHM(s)}`;
 
   return (
     <View style={styles.container}>
@@ -208,6 +237,56 @@ export default function TachoScreen() {
           </View>
           <Text style={styles.heroMsg}>{status.message}</Text>
         </View>
+
+        {/* Break in progress */}
+        {bip && (
+          <View style={styles.breakCard} testID="break-progress-card">
+            <View style={styles.breakHead}>
+              <Icon name="coffee-outline" size={22} color={colors.success} />
+              <Text style={styles.breakTitle}>
+                {bip.is_second_part ? "PAUSA · 2ª PARTE (30 MIN)" : "PAUSA EN CURSO (45 MIN)"}
+              </Text>
+            </View>
+            <Text style={styles.breakValue} testID="break-remaining">
+              {formatHMS(bip.remaining_s)}
+            </Text>
+            <View style={styles.progressBar}>
+              <View
+                style={[
+                  styles.progressFill,
+                  { width: `${Math.min(100, (bip.elapsed_s / bip.target_s) * 100)}%`, backgroundColor: colors.success },
+                ]}
+              />
+            </View>
+            <Text style={styles.breakHint}>
+              {bip.is_second_part
+                ? "Ya hiciste 15 min antes. Con 30 min completas la pausa."
+                : bip.first_part_reached
+                  ? "15 min alcanzados: si paras ahora cuenta como 1ª parte (luego 30 min)."
+                  : "Mínimo 15 min para que cuente como 1ª parte de una pausa dividida."}
+            </Text>
+          </View>
+        )}
+
+        {/* Alerts */}
+        {status.alerts.length > 0 && (
+          <View style={styles.alertsBlock} testID="alerts-block">
+            {status.alerts.map((a, i) => (
+              <View
+                key={i}
+                style={[styles.alertRow, { borderLeftColor: alertColor(a.level) }]}
+                testID={`alert-${i}`}
+              >
+                <Icon
+                  name={a.level === "info" ? "information-outline" : "alert-outline"}
+                  size={18}
+                  color={alertColor(a.level)}
+                />
+                <Text style={styles.alertText}>{a.text}</Text>
+              </View>
+            ))}
+          </View>
+        )}
 
         {/* Current state */}
         <View style={styles.currentStateCard} testID="current-state-card">
@@ -289,28 +368,65 @@ export default function TachoScreen() {
 
         {/* Stats */}
         <Text style={styles.sectionTitle}>LÍMITES EU 561/2006</Text>
+        <View style={styles.chipRow}>
+          <View style={[styles.ruleChip, status.split_break_first_done && { borderColor: colors.success }]} testID="chip-split-break">
+            <Text style={[styles.ruleChipText, status.split_break_first_done && { color: colors.success }]}>
+              Pausa 15+30: {status.split_break_first_done ? "1ª parte hecha" : "pendiente"}
+            </Text>
+          </View>
+          <View style={styles.ruleChip} testID="chip-extensions">
+            <Text style={styles.ruleChipText}>Ampliación 10h: {status.extensions_used_week}/2</Text>
+          </View>
+        </View>
         <StatRow
-          label="Conducción diaria"
+          label={status.in_extension ? "Conducción diaria (ampliada 10h)" : "Conducción diaria (9h)"}
           value={formatHM(status.daily_driving_s)}
-          remaining={`${formatHM(status.remaining_daily_driving_s)} rest.`}
+          remaining={
+            `${formatHM(status.remaining_daily_driving_s)} rest.` +
+            (!status.in_extension && status.extension_available
+              ? ` · ${formatHM(status.remaining_daily_with_extension_s)} con ampliación`
+              : !status.extension_available
+                ? " · sin ampliaciones esta semana"
+                : "")
+          }
           pct={dailyPct}
           testID="stat-daily"
         />
         <StatRow
-          label="Conducción semanal"
+          label="Conducción semanal (56h)"
           value={formatHM(status.weekly_driving_s)}
-          remaining={`${formatHM(status.remaining_weekly_driving_s)} rest.`}
+          remaining={`${formatHM(status.remaining_weekly_driving_s)} disponibles`}
           pct={weeklyPct}
           testID="stat-weekly"
         />
         <StatRow
-          label="Descanso diario"
-          value={formatHM(status.daily_rest_s)}
-          remaining={status.daily_rest_s >= 11 * 3600 ? "✓ Suficiente" : "11h recom."}
-          pct={Math.min(100, (status.daily_rest_s / (11 * 3600)) * 100)}
-          barColor={colors.success}
-          testID="stat-rest"
+          label="Dos semanas (90h)"
+          value={formatHM(status.biweekly_driving_s)}
+          remaining={`${formatHM(Math.max(0, 90 * 3600 - status.biweekly_driving_s))} rest.`}
+          pct={biweeklyPct}
+          testID="stat-biweekly"
         />
+
+        <Text style={styles.sectionTitle}>DESCANSOS</Text>
+        <View style={styles.restGrid}>
+          <View style={styles.restCell} testID="rest-daily-deadline">
+            <Text style={styles.restLabel}>DESCANSO DIARIO</Text>
+            <Text style={[styles.restValue, (status.daily_rest_start_by_s ?? 1) < 0 && { color: colors.error }]}>
+              {status.current_state === "REST" ? "En descanso" : deadline(status.daily_rest_start_by_s)}
+            </Text>
+            <Text style={styles.restSub}>
+              Mín. {formatHM(status.required_daily_rest_s)} · reducidos {status.reduced_daily_rests_used}/3
+              {status.daily_rest_split_first_done ? " · 3h hechas (faltan 9h)" : ""}
+            </Text>
+          </View>
+          <View style={styles.restCell} testID="rest-weekly-deadline">
+            <Text style={styles.restLabel}>DESCANSO SEMANAL</Text>
+            <Text style={[styles.restValue, (status.weekly_rest_due_s ?? 1) < 0 && { color: colors.error }]}>
+              {deadline(status.weekly_rest_due_s)}
+            </Text>
+            <Text style={styles.restSub}>45h normal · 24h reducido</Text>
+          </View>
+        </View>
 
         {/* Card sim */}
         <Pressable
@@ -444,6 +560,48 @@ const useStyles = makeStyles((c) => ({
     gap: spacing.md,
   },
   stateDot: { width: 10, height: 10, borderRadius: 5 },
+  breakCard: {
+    backgroundColor: c.surfaceSecondary,
+    borderRadius: radius.lg,
+    borderWidth: 1.5,
+    borderColor: c.success,
+    padding: spacing.lg,
+    marginBottom: spacing.lg,
+  },
+  breakHead: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  breakTitle: { color: c.success, fontSize: typography.sm, fontWeight: "800", letterSpacing: 1 },
+  breakValue: { color: c.onSurface, fontSize: 36, fontWeight: "900", marginVertical: spacing.xs },
+  breakHint: { color: c.onSurfaceTertiary, fontSize: typography.sm, marginTop: spacing.sm },
+  alertsBlock: { gap: spacing.sm, marginBottom: spacing.lg },
+  alertRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    backgroundColor: c.surfaceSecondary,
+    borderRadius: radius.md,
+    borderLeftWidth: 4,
+    padding: spacing.md,
+  },
+  alertText: { color: c.onSurfaceSecondary, fontSize: typography.sm, flex: 1, fontWeight: "600" },
+  chipRow: { flexDirection: "row", gap: spacing.sm, marginBottom: spacing.sm, flexWrap: "wrap" },
+  ruleChip: {
+    borderWidth: 1,
+    borderColor: c.borderStrong,
+    borderRadius: radius.pill,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+  },
+  ruleChipText: { color: c.onSurfaceTertiary, fontSize: 11, fontWeight: "700" },
+  restGrid: { flexDirection: "row", gap: spacing.sm },
+  restCell: {
+    flex: 1,
+    backgroundColor: c.surfaceSecondary,
+    borderRadius: radius.md,
+    padding: spacing.md,
+  },
+  restLabel: { color: c.muted, fontSize: 10, fontWeight: "700", letterSpacing: 1 },
+  restValue: { color: c.onSurface, fontSize: typography.lg, fontWeight: "800", marginTop: 4 },
+  restSub: { color: c.muted, fontSize: 11, marginTop: 4 },
   gpsCard: {
     flexDirection: "row",
     alignItems: "center",

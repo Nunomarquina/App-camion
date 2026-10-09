@@ -244,9 +244,12 @@ class TestRoutes:
         })
         assert r.status_code == 200
         d = r.json()
-        assert d["distance_km"] > 400 and d["distance_km"] < 700
+        assert 400 < d["distance_km"] < 800
         assert d["truck_adjusted_duration_min"] >= d["duration_min"]
-        assert d["vehicle_restricted"] is True  # hazmat
-        assert any("HAZMAT" in w for w in d["warnings"])
-        assert len(d["steps"]) == 3
-        assert len(d["polyline"]) == 21
+        # Real Mapbox: vehicle_restricted is True only if route has violations;
+        # hazmat alone just adds ADR warning. Assert ADR warning instead.
+        assert d["vehicle_applied"] is True
+        assert any("ADR" in w for w in d["warnings"])  # hazmat
+        assert len(d["steps"]) > 3
+        assert len(d["polyline"]) > 50
+        assert "plan" in d

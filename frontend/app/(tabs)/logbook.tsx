@@ -6,6 +6,7 @@ import Icon from "@react-native-vector-icons/material-design-icons";
 import { api } from "@/src/api";
 import { colors, spacing, radius, typography, makeStyles } from "@/src/theme";
 import { formatHM } from "@/src/format";
+import { ManualEntrySheet } from "@/src/components/manual-entry-sheet";
 
 type TachoState = "DRIVING" | "WORK" | "REST" | "AVAILABLE";
 type Evt = {
@@ -48,6 +49,14 @@ export default function LogbookScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(false);
+  const [showEntry, setShowEntry] = useState(false);
+
+  async function removeEvent(id: string) {
+    try {
+      await api(`/tacho/events/${id}`, { method: "DELETE" });
+    } catch {}
+    load();
+  }
 
   const load = useCallback(async () => {
     try {
@@ -90,6 +99,17 @@ export default function LogbookScreen() {
               <Text style={styles.srcText}>{SOURCE[item.source]}</Text>
             </View>
             {!item.ended_at && <Text style={styles.live}>EN CURSO</Text>}
+            <View style={{ flex: 1 }} />
+            {item.ended_at && (
+              <Pressable
+                testID={`log-delete-${item.id}`}
+                onPress={() => removeEvent(item.id)}
+                hitSlop={10}
+                style={styles.delBtn}
+              >
+                <Icon name="trash-can-outline" size={18} color={colors.muted} />
+              </Pressable>
+            )}
           </View>
           <Text style={styles.time}>
             {toDate(item.started_at).toLocaleDateString("es-ES", { day: "2-digit", month: "short" })} ·{" "}
@@ -129,11 +149,20 @@ export default function LogbookScreen() {
   return (
     <View style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + spacing.md }]}>
-        <Text style={styles.title}>Historial</Text>
-        <Text style={styles.subtitle} testID="log-pending-count">
-          {pending > 0 ? `${pending} registros GPS pendientes de confirmar` : "Todos los registros confirmados"}
-        </Text>
+        <View style={styles.headerRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.title}>Historial</Text>
+            <Text style={styles.subtitle} testID="log-pending-count">
+              {pending > 0 ? `${pending} registros GPS pendientes de confirmar` : "Todos los registros confirmados"}
+            </Text>
+          </View>
+          <Pressable testID="log-add-entry-btn" onPress={() => setShowEntry(true)} style={styles.addBtn}>
+            <Icon name="plus" size={18} color={colors.onBrandPrimary} />
+            <Text style={styles.addText}>Simular</Text>
+          </Pressable>
+        </View>
       </View>
+      <ManualEntrySheet visible={showEntry} onClose={() => setShowEntry(false)} onSaved={load} />
       {loading ? (
         <ActivityIndicator style={{ marginTop: spacing.xl }} color={colors.brandPrimary} />
       ) : error ? (
@@ -173,6 +202,18 @@ export default function LogbookScreen() {
 }
 
 const useStyles = makeStyles((c) => ({
+  headerRow: { flexDirection: "row", alignItems: "center", gap: spacing.md },
+  addBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: c.brandPrimary,
+    paddingHorizontal: spacing.md,
+    minHeight: 40,
+    borderRadius: radius.md,
+  },
+  addText: { color: c.onBrandPrimary, fontWeight: "800", fontSize: typography.sm },
+  delBtn: { width: 32, height: 32, alignItems: "center", justifyContent: "center" },
   container: { flex: 1, backgroundColor: c.surface },
   header: {
     paddingHorizontal: spacing.lg,

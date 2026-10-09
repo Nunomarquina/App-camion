@@ -5,8 +5,9 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
-import math
 import uuid
+from tacho_rules import compute_status, plan_breaks
+import mapbox_routing
 import bcrypt
 import jwt
 from pathlib import Path
@@ -145,51 +146,6 @@ class TachoEvent(TachoEventIn):
     duration_s: Optional[int] = None
 
 
-class GPSPoint(BaseModel):
-    lat: float
-    lng: float
-    speed_kmh: float = 0
-    timestamp: Optional[datetime] = None
-
-
-class RouteIn(BaseModel):
-    origin: GPSPoint
-    destination: GPSPoint
-    vehicle_id: Optional[str] = None
-
-
-class RouteStep(BaseModel):
-    instruction: str
-    distance_km: float
-    duration_min: float
-    polyline: List[List[float]]  # [[lat, lng], ...]
-
-
-class RouteOut(BaseModel):
-    distance_km: float
-    duration_min: float
-    truck_adjusted_duration_min: float
-    polyline: List[List[float]]
-    warnings: List[str]
-    steps: List[RouteStep]
-    vehicle_restricted: bool
-
-
-class TacoStatus(BaseModel):
-    current_state: TachoState
-    continuous_driving_s: int
-    daily_driving_s: int
-    weekly_driving_s: int
-    daily_rest_s: int
-    remaining_continuous_driving_s: int
-    remaining_daily_driving_s: int
-    remaining_weekly_driving_s: int
-    needs_break: bool
-    needs_daily_rest: bool
-    violation: bool
-    last_event_at: Optional[datetime] = None
-    message: str
-
 
 # ============ AUTH ROUTES ============
 @api_router.get("/")
@@ -290,13 +246,6 @@ async def delete_vehicle(vehicle_id: str, user=Depends(get_current_user)):
 
 
 # ============ TACHOGRAPH ROUTES ============
-# EU 561/2006 limits
-CONTINUOUS_DRIVING_LIMIT_S = 4.5 * 3600   # 4h30
-DAILY_DRIVING_LIMIT_S = 9 * 3600          # 9h (can be 10h max 2x/week)
-WEEKLY_DRIVING_LIMIT_S = 56 * 3600        # 56h/week (45h average)
-BREAK_DURATION_S = 45 * 60                # 45min
-DAILY_REST_S = 11 * 3600                  # 11h daily rest
-
 
 async def close_open_event(user_id: str, now: datetime):
     open_evt = await db.tacho_events.find_one(
@@ -339,118 +288,70 @@ async def list_tacho_events(limit: int = 100, user=Depends(get_current_user)):
     return [TachoEvent(**e) async for e in cursor]
 
 
-def _ensure_utc(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt
 
-
-async def _compute_status(user_id: str) -> TacoStatus:
-    now = now_utc()
-    one_day_ago = now - timedelta(days=1)
-    one_week_ago = now - timedelta(days=7)
-
+async def _compute_status(user_id: str, tz_offset_min: int = 0) -> dict:
+    since = now_utc() - timedelta(days=21)
     cursor = db.tacho_events.find(
-        {"user_id": user_id}, {"_id": 0}
+        {"user_id": user_id, "$or": [{"ended_at": None}, {"ended_at": {"$gte": since}}]},
+        {"_id": 0},
     ).sort("started_at", 1)
     events = [e async for e in cursor]
-
-    # Find current state (most recent event)
-    current_state: TachoState = "REST"
-    last_event_at = None
-    if events:
-        last = events[-1]
-        current_state = last["state"]
-        last_event_at = _ensure_utc(last["started_at"])
-
-    # Compute continuous driving: sum of consecutive DRIVING blocks ending at current time
-    continuous_driving = 0
-    # walk from latest backwards: as long as state DRIVING or short break <45min
-    for e in reversed(events):
-        state = e["state"]
-        start = _ensure_utc(e["started_at"])
-        end = _ensure_utc(e["ended_at"]) if e.get("ended_at") else now
-        dur = (end - start).total_seconds()
-        if state == "DRIVING":
-            continuous_driving += dur
-        elif state == "REST":
-            # If this rest is >= 45 min, break the chain
-            if dur >= BREAK_DURATION_S:
-                break
-        else:
-            # WORK or AVAILABLE: doesn't count as driving but doesn't reset continuous either
-            continue
-
-    # Daily driving (last 24h) & daily rest
-    daily_driving = 0
-    daily_rest = 0
-    for e in events:
-        start = _ensure_utc(e["started_at"])
-        end = _ensure_utc(e["ended_at"]) if e.get("ended_at") else now
-        if end < one_day_ago:
-            continue
-        clipped_start = max(start, one_day_ago)
-        dur = (end - clipped_start).total_seconds()
-        if dur <= 0:
-            continue
-        if e["state"] == "DRIVING":
-            daily_driving += dur
-        elif e["state"] == "REST":
-            daily_rest += dur
-
-    # Weekly driving
-    weekly_driving = 0
-    for e in events:
-        start = _ensure_utc(e["started_at"])
-        end = _ensure_utc(e["ended_at"]) if e.get("ended_at") else now
-        if end < one_week_ago:
-            continue
-        clipped_start = max(start, one_week_ago)
-        dur = (end - clipped_start).total_seconds()
-        if dur <= 0:
-            continue
-        if e["state"] == "DRIVING":
-            weekly_driving += dur
-
-    remaining_continuous = max(0, CONTINUOUS_DRIVING_LIMIT_S - continuous_driving)
-    remaining_daily = max(0, DAILY_DRIVING_LIMIT_S - daily_driving)
-    remaining_weekly = max(0, WEEKLY_DRIVING_LIMIT_S - weekly_driving)
-
-    needs_break = continuous_driving >= CONTINUOUS_DRIVING_LIMIT_S
-    needs_daily_rest = daily_driving >= DAILY_DRIVING_LIMIT_S
-    violation = needs_break or needs_daily_rest or weekly_driving > WEEKLY_DRIVING_LIMIT_S
-
-    if violation:
-        msg = "LÍMITE ALCANZADO. Descanso obligatorio."
-    elif remaining_continuous < 30 * 60:
-        msg = "Próximo al límite. Descanso en breve."
-    elif current_state == "DRIVING":
-        msg = "Conduciendo dentro del límite."
-    elif current_state == "REST":
-        msg = "En descanso."
-    else:
-        msg = "Estado activo."
-
-    return TacoStatus(
-        current_state=current_state,
-        continuous_driving_s=int(continuous_driving),
-        daily_driving_s=int(daily_driving),
-        weekly_driving_s=int(weekly_driving),
-        daily_rest_s=int(daily_rest),
-        remaining_continuous_driving_s=int(remaining_continuous),
-        remaining_daily_driving_s=int(remaining_daily),
-        remaining_weekly_driving_s=int(remaining_weekly),
-        needs_break=needs_break,
-        needs_daily_rest=needs_daily_rest,
-        violation=violation,
-        last_event_at=last_event_at,
-        message=msg,
-    )
+    return compute_status(events, now_utc(), tz_offset_min)
 
 
-@api_router.get("/tacho/status", response_model=TacoStatus)
-async def tacho_status(user=Depends(get_current_user)):
-    return await _compute_status(user["id"])
+@api_router.get("/tacho/status")
+async def tacho_status(tz_offset_min: int = 0, user=Depends(get_current_user)):
+    return await _compute_status(user["id"], tz_offset_min)
+
+
+class ManualEntryIn(BaseModel):
+    state: TachoState
+    started_at: datetime
+    ended_at: datetime
+    note: Optional[str] = None
+
+
+@api_router.post("/tacho/events/manual", response_model=TachoEvent, status_code=201)
+async def manual_entry(body: ManualEntryIn, user=Depends(get_current_user)):
+    """Simulate/enter a past tachograph activity (closed period)."""
+    start = body.started_at if body.started_at.tzinfo else body.started_at.replace(tzinfo=timezone.utc)
+    end = body.ended_at if body.ended_at.tzinfo else body.ended_at.replace(tzinfo=timezone.utc)
+    now = now_utc()
+    if end <= start:
+        raise HTTPException(400, "El fin debe ser posterior al inicio")
+    if end > now + timedelta(minutes=1):
+        raise HTTPException(400, "No se pueden registrar actividades futuras")
+    s_naive, e_naive = start.replace(tzinfo=None), end.replace(tzinfo=None)
+    overlap = await db.tacho_events.find_one({
+        "user_id": user["id"],
+        "started_at": {"$lt": e_naive},
+        "$or": [{"ended_at": None}, {"ended_at": {"$gt": s_naive}}],
+    }, {"_id": 0})
+    if overlap:
+        raise HTTPException(409, "Se solapa con otra actividad registrada")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "state": body.state,
+        "source": "MANUAL",
+        "confirmed": True,
+        "lat": None, "lng": None, "speed_kmh": None,
+        "note": body.note or "Entrada manual",
+        "started_at": start,
+        "ended_at": end,
+        "duration_s": int((end - start).total_seconds()),
+    }
+    await db.tacho_events.insert_one(doc)
+    doc.pop("_id", None)
+    return TachoEvent(**doc)
+
+
+@api_router.delete("/tacho/events/{event_id}", status_code=204)
+async def delete_event(event_id: str, user=Depends(get_current_user)):
+    res = await db.tacho_events.delete_one({"id": event_id, "user_id": user["id"]})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Event not found")
+    return None
 
 
 class GPSSampleIn(BaseModel):
@@ -459,7 +360,7 @@ class GPSSampleIn(BaseModel):
     speed_kmh: float
 
 
-@api_router.post("/tacho/gps-sample", response_model=TacoStatus)
+@api_router.post("/tacho/gps-sample")
 async def gps_sample(body: GPSSampleIn, user=Depends(get_current_user)):
     """GPS auto-detect driving/rest. Creates an unconfirmed event if state changes."""
     now = now_utc()
@@ -531,100 +432,66 @@ async def card_sim(body: CardSimIn, user=Depends(get_current_user)):
     }
 
 
-# ============ ROUTING (truck-aware simulated) ============
-def haversine_km(lat1, lng1, lat2, lng2):
-    R = 6371.0
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlmb = math.radians(lng2 - lng1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlmb / 2) ** 2
-    return 2 * R * math.asin(math.sqrt(a))
+
+# ============ ROUTING (Mapbox truck restrictions) ============
+class LatLng(BaseModel):
+    lat: float = Field(ge=-90, le=90)
+    lng: float = Field(ge=-180, le=180)
 
 
-@api_router.post("/routes/calculate", response_model=RouteOut)
+class RouteIn(BaseModel):
+    origin: LatLng
+    destination: LatLng
+    vehicle_id: Optional[str] = None
+    tz_offset_min: int = 0
+
+
+@api_router.get("/geocode")
+async def geocode(q: str, lat: Optional[float] = None, lng: Optional[float] = None,
+                  user=Depends(get_current_user)):
+    if len(q.strip()) < 2:
+        raise HTTPException(400, "Búsqueda demasiado corta")
+    proximity = f"{lng},{lat}" if lat is not None and lng is not None else None
+    return {"results": await mapbox_routing.geocode(q.strip(), proximity)}
+
+
+@api_router.post("/routes/calculate")
 async def calculate_route(body: RouteIn, user=Depends(get_current_user)):
-    """
-    Simulated truck-aware routing.
-    - Builds a straight-line polyline between origin and destination (simplified)
-    - Adjusts average speed based on vehicle size/weight
-    - Produces truck warnings based on vehicle dimensions
-    """
     vehicle = None
     if body.vehicle_id:
-        vehicle = await db.vehicles.find_one(
-            {"id": body.vehicle_id, "user_id": user["id"]}, {"_id": 0}
-        )
+        vehicle = await db.vehicles.find_one({"id": body.vehicle_id, "user_id": user["id"]}, {"_id": 0})
     if not vehicle:
-        vehicle = await db.vehicles.find_one(
-            {"user_id": user["id"], "is_active": True}, {"_id": 0}
-        )
+        vehicle = await db.vehicles.find_one({"user_id": user["id"], "is_active": True}, {"_id": 0})
 
-    o = body.origin
-    d = body.destination
-    distance = haversine_km(o.lat, o.lng, d.lat, d.lng)
+    route = await mapbox_routing.truck_route(body.origin.model_dump(), body.destination.model_dump(), vehicle)
 
-    # Interpolate 20 points
-    N = 20
-    poly = []
-    for i in range(N + 1):
-        t = i / N
-        poly.append([o.lat + (d.lat - o.lat) * t, o.lng + (d.lng - o.lng) * t])
-
-    # Baseline car speed estimate
-    avg_car_speed = 85  # km/h on mixed highway/urban
-
-    truck_speed_cap = 90
     warnings: List[str] = []
-    truck_adjustment = 1.0
-    vehicle_restricted = False
-
-    if vehicle:
-        truck_speed_cap = min(vehicle.get("max_speed_kmh", 90), 90)
-        # Big penalties for very heavy / long / tall vehicles
-        if vehicle.get("weight_t", 0) > 20:
-            truck_adjustment *= 1.15
-            warnings.append("Vehículo >20t: evitar pendientes pronunciadas y zonas urbanas con restricción de peso.")
-        if vehicle.get("height_m", 0) > 4.0:
-            truck_adjustment *= 1.08
-            warnings.append(f"Altura {vehicle['height_m']}m: comprobar puentes bajos y túneles.")
-        if vehicle.get("length_m", 0) > 16:
-            truck_adjustment *= 1.1
-            warnings.append(f"Longitud {vehicle['length_m']}m: evitar curvas cerradas y rotondas pequeñas.")
+    if not vehicle:
+        warnings.append("Sin vehículo activo: la ruta no tiene en cuenta dimensiones.")
+    else:
+        warnings.append(
+            f"Ruta evitando restricciones < {vehicle['height_m']}m alto, "
+            f"{vehicle['width_m']}m ancho, {vehicle['weight_t']}t."
+        )
         if vehicle.get("hazmat"):
-            truck_adjustment *= 1.2
-            warnings.append("Mercancía peligrosa (HAZMAT): se desvían túneles y zonas urbanas.")
-            vehicle_restricted = True
+            warnings.append("ADR: Mapbox no filtra túneles por categoría ADR. Verifica túneles en la ruta.")
+        if vehicle.get("length_m", 0) > 16.5:
+            warnings.append(f"Longitud {vehicle['length_m']}m (>16.5m): requiere autorización especial.")
         if vehicle.get("width_m", 0) > 2.55:
-            warnings.append("Vehículo especial de ancho >2.55m: requiere permiso.")
+            warnings.append("Ancho >2.55m: transporte especial, requiere permiso.")
+    warnings.extend(route["violations"])
 
-    effective_speed = min(avg_car_speed, truck_speed_cap)
-    duration_min = (distance / effective_speed) * 60
-    truck_adjusted = duration_min * truck_adjustment
+    status = await _compute_status(user["id"], body.tz_offset_min)
+    plan = plan_breaks(route["truck_duration_s"], status)
 
-    # Simple 3-step breakdown
-    steps = []
-    thirds = [0, N // 3, (2 * N) // 3, N]
-    labels = ["Sal hacia la autovía principal", "Continúa por carretera nacional", "Aproximación al destino"]
-    for idx in range(3):
-        a, b = thirds[idx], thirds[idx + 1]
-        seg_dist = haversine_km(poly[a][0], poly[a][1], poly[b][0], poly[b][1])
-        seg_dur = (seg_dist / effective_speed) * 60 * truck_adjustment
-        steps.append(RouteStep(
-            instruction=labels[idx],
-            distance_km=round(seg_dist, 2),
-            duration_min=round(seg_dur, 1),
-            polyline=poly[a : b + 1],
-        ))
-
-    return RouteOut(
-        distance_km=round(distance, 2),
-        duration_min=round(duration_min, 1),
-        truck_adjusted_duration_min=round(truck_adjusted, 1),
-        polyline=poly,
-        warnings=warnings,
-        steps=steps,
-        vehicle_restricted=vehicle_restricted,
-    )
+    return {
+        **route,
+        "truck_adjusted_duration_min": round(route["truck_duration_s"] / 60, 1),
+        "warnings": warnings,
+        "vehicle_restricted": bool(route["violations"]),
+        "vehicle_applied": bool(vehicle),
+        "plan": plan,
+    }
 
 
 # ============ APP SETUP ============

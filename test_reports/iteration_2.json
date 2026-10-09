@@ -1,0 +1,34 @@
+{
+  "summary": "Iteration 2 full test pass. Backend: 42/42 pytest cases passed (23 regression from iter1 + 19 new in test_iteration2.py). New coverage: /api/geocode (auth, Zaragoza returns name/full_address/lat/lng, short-query 400), /api/routes/calculate real Mapbox (Madrid->Barcelona 450-800km, polyline >50 pts as [lat,lng], Spanish steps, truck_adjusted_duration_min >= duration_min, plan.breaks_45min>=1, warnings mention dimensions/ADR/length when active vehicle), /api/tacho/events/manual (create closed past entry, overlap 409, future 400, end<=start 400, delete 204), /api/tacho/status EU 561 rules (split break 15+30 resets continuous=0; 30+15 wrong-order does NOT reset and sets split_break_first_done=true; REST 45 resets; drive >9h ⇒ in_extension true, daily_limit_s=36000, extensions_used_week counts; drive 5h ⇒ violation+error alert; daily_rest_start_by_s and weekly_rest_due_s present; open REST after 15m+drive ⇒ break_in_progress target_s=1800 is_second_part=true; open REST without prior split ⇒ target_s=2700 is_second_part=false). Frontend (mobile 390x844, Expo web): fresh registration → tacho shows chip-split-break, chip-extensions, stat-daily, stat-weekly, stat-biweekly, rest-daily-deadline, rest-weekly-deadline all rendered; break-progress-card appears after DRIVING→REST with countdown '44m 59s'; logbook log-add-entry-btn opens manual-entry-sheet, saving a REST 45-min 5h-ago creates a row (log-rows=3), repeat overlap shows manual-entry-error 'Se solapa con otra actividad registrada', delete removes row; map Zaragoza search returns search-result-0, calc-route-btn computes 317km / 3h 45m with route-distance/route-truck-time/route-total-time/route-plan/warning-0 and toggle-steps-btn reveals route-step-0 with Spanish instructions. No red screens; one benign console 409 from overlap test. Updated existing iter1 route test to match new real-Mapbox contract (steps>3, polyline>50, ADR warning instead of HAZMAT string).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "tacho", "issues": ["alerts-block is conditionally rendered only when status.alerts is non-empty. Fresh user with no violations => block absent. Not a bug, documenting for next tester."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration2.py",
+    "/app/backend/tests/test_backend_full.py",
+    "/app/test_reports/pytest/iteration2.xml",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py grew with routing/geocode handlers and is ~520 lines; still readable but splitting into routers/{auth,vehicles,tacho,routes}.py is advisable soon.",
+    "mapbox_routing.truck_route caps per-segment speed at vehicle max_speed_kmh (good), but still uses the 'driving' profile. Mapbox also offers a 'driving-traffic' profile; truck_adjusted may underestimate on congested roads. Acceptable for MVP.",
+    "tacho_rules.compute_status mutates its own local state inside a single pass; the test-case 'wrong order 30+15' depends on the subtle rule that a 30m REST taken BEFORE any 15m first-part does nothing (not treated as full break since <45). The implementation is correct and tests cover the edge; just worth a code-comment for maintainers."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration2.py",
+    "/app/backend/tests/test_backend_full.py"
+  ],
+  "success_rate": {"backend": "100% (42/42)", "frontend": "100% of requested flows"},
+  "seed_data_creation": "Each pytest and UI run registers brand-new disposable users prefixed it2_/ui (uuid-suffix). No modification to driver@test.com. One UI run created ~2 manual REST entries under a fresh user.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend URL env var is EXPO_PUBLIC_BACKEND_URL. pytest.ini uses `-n 2 --dist loadscope` by default; serial requires `-o addopts=''`. Mapbox token must stay in backend/.env (MAPBOX_ACCESS_TOKEN). Known mocked: /api/tacho/card-sim still simulates card reading. Auth form uses testIDs auth-tab-login/auth-tab-register/auth-name/auth-email/auth-password/auth-submit (NOT email-input/password-input). On tacho, alerts-block renders only when status.alerts.length>0; drive 5h via manual entries to force it to show.",
+  "rca_of_issue": "N/A - no bugs found."
+}

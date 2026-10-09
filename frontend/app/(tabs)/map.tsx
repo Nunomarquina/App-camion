@@ -30,13 +30,29 @@ type RouteOut = {
   truck_adjusted_duration_min: number;
   polyline: [number, number][];
   warnings: string[];
+  violations: string[];
+  vehicle_applied: boolean;
   steps: {
     instruction: string;
     distance_km: number;
     duration_min: number;
   }[];
   vehicle_restricted: boolean;
+  plan: {
+    breaks_45min: number;
+    daily_rests: number;
+    stop_time_s: number;
+    total_with_stops_s: number;
+    fits_remaining_today: boolean;
+  };
 };
+type Place = { id: string; name: string; full_address: string; lat: number; lng: number };
+
+function fmtMin(min: number) {
+  const h = Math.floor(min / 60);
+  const m = Math.round(min % 60);
+  return h > 0 ? `${h}h ${String(m).padStart(2, "0")}m` : `${m} min`;
+}
 
 const DEFAULT_REGION = {
   latitude: 40.4168,
@@ -57,6 +73,9 @@ export default function MapScreen() {
   const [gpsStatus, setGpsStatus] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [tapMode, setTapMode] = useState<"origin" | "destination">("destination");
+  const [results, setResults] = useState<Place[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [showSteps, setShowSteps] = useState(false);
   const styles = useStyles();
 
   const loadVehicle = useCallback(async () => {
@@ -121,6 +140,7 @@ export default function MapScreen() {
           origin: { ...origin, speed_kmh: 0 },
           destination: { ...destination, speed_kmh: 0 },
           vehicle_id: vehicle?.id,
+          tz_offset_min: -new Date().getTimezoneOffset(),
         }),
       });
       setRoute(r);
@@ -140,35 +160,32 @@ export default function MapScreen() {
   }
 
   async function searchDestination() {
-    if (!destQuery.trim()) return;
+    if (destQuery.trim().length < 2) return;
     setError(null);
+    setSearching(true);
     try {
-      // Use Nominatim (OpenStreetMap) for geocoding
-      const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(
-        destQuery,
-      )}`;
-      const res = await fetch(url, {
-        headers: { "User-Agent": "TruckNavPro/1.0" },
-      });
-      const data: any[] = await res.json();
-      if (data.length === 0) {
-        setError("Dirección no encontrada");
-        return;
-      }
-      const pt = { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
-      setDestination(pt);
-      mapRef.current?.animateToRegion(
-        {
-          latitude: pt.lat,
-          longitude: pt.lng,
-          latitudeDelta: 0.5,
-          longitudeDelta: 0.5,
-        },
-        800,
+      const near = origin ? `&lat=${origin.lat}&lng=${origin.lng}` : "";
+      const data = await api<{ results: Place[] }>(
+        `/geocode?q=${encodeURIComponent(destQuery.trim())}${near}`,
       );
+      if (data.results.length === 0) setError("Dirección no encontrada");
+      setResults(data.results);
     } catch (e: any) {
-      setError("Error buscando dirección");
+      setError(e.message || "Error buscando dirección");
+    } finally {
+      setSearching(false);
     }
+  }
+
+  function pickPlace(p: Place) {
+    setResults([]);
+    setDestQuery(p.name);
+    setRoute(null);
+    setDestination({ lat: p.lat, lng: p.lng });
+    mapRef.current?.animateToRegion(
+      { latitude: p.lat, longitude: p.lng, latitudeDelta: 0.5, longitudeDelta: 0.5 },
+      800,
+    );
   }
 
   async function sendGpsSample(lat: number, lng: number, speed: number) {
@@ -253,9 +270,31 @@ export default function MapScreen() {
             onPress={searchDestination}
             style={styles.searchBtn}
           >
-            <Icon name="arrow-right" size={20} color={colors.onBrandPrimary} />
+            {searching ? (
+              <ActivityIndicator size="small" color={colors.onBrandPrimary} />
+            ) : (
+              <Icon name="arrow-right" size={20} color={colors.onBrandPrimary} />
+            )}
           </Pressable>
         </View>
+        {results.length > 0 && (
+          <View style={styles.results} testID="search-results">
+            {results.map((p, i) => (
+              <Pressable
+                key={p.id}
+                testID={`search-result-${i}`}
+                onPress={() => pickPlace(p)}
+                style={({ pressed }) => [styles.resultRow, pressed && { backgroundColor: colors.surfaceTertiary }]}
+              >
+                <Icon name="map-marker-outline" size={18} color={colors.brandPrimary} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.resultName} numberOfLines={1}>{p.name}</Text>
+                  <Text style={styles.resultAddr} numberOfLines={1}>{p.full_address}</Text>
+                </View>
+              </Pressable>
+            ))}
+          </View>
+        )}
         <View style={styles.pillRow}>
           <View style={[styles.pill, { backgroundColor: colors.surfaceSecondary }]}>
             <Icon
@@ -344,24 +383,38 @@ export default function MapScreen() {
         )}
 
         {route && (
-          <ScrollView style={{ maxHeight: 240 }} testID="route-details">
+          <ScrollView style={{ maxHeight: 280 }} testID="route-details">
             <View style={styles.statGrid}>
               <View style={styles.statCell}>
                 <Text style={styles.statCellLabel}>DISTANCIA</Text>
-                <Text style={styles.statCellValue}>{route.distance_km} km</Text>
+                <Text style={styles.statCellValue} testID="route-distance">{Math.round(route.distance_km)} km</Text>
               </View>
               <View style={styles.statCell}>
-                <Text style={styles.statCellLabel}>TIEMPO CAMIÓN</Text>
-                <Text style={[styles.statCellValue, { color: colors.brandPrimary }]}>
-                  {Math.round(route.truck_adjusted_duration_min)} min
+                <Text style={styles.statCellLabel}>CONDUCCIÓN</Text>
+                <Text style={[styles.statCellValue, { color: colors.brandPrimary }]} testID="route-truck-time">
+                  {fmtMin(route.truck_adjusted_duration_min)}
                 </Text>
               </View>
               <View style={styles.statCell}>
-                <Text style={styles.statCellLabel}>TIEMPO COCHE</Text>
-                <Text style={[styles.statCellValue, { color: colors.muted }]}>
-                  {Math.round(route.duration_min)} min
+                <Text style={styles.statCellLabel}>CON PAUSAS</Text>
+                <Text style={styles.statCellValue} testID="route-total-time">
+                  {fmtMin(route.plan.total_with_stops_s / 60)}
                 </Text>
               </View>
+            </View>
+            <View style={styles.planRow} testID="route-plan">
+              <Icon
+                name={route.plan.fits_remaining_today ? "check-circle-outline" : "coffee-outline"}
+                size={18}
+                color={route.plan.fits_remaining_today ? colors.success : colors.warning}
+              />
+              <Text style={styles.planText}>
+                {route.plan.fits_remaining_today
+                  ? "Llegas sin pausa obligatoria con tu tiempo disponible."
+                  : `Necesitas ${route.plan.breaks_45min} pausa(s) de 45 min` +
+                    (route.plan.daily_rests ? ` y ${route.plan.daily_rests} descanso(s) diario(s)` : "") +
+                    ". Coche: " + fmtMin(route.duration_min) + "."}
+              </Text>
             </View>
             {route.warnings.length > 0 && (
               <View style={styles.warningsBlock}>
@@ -373,6 +426,20 @@ export default function MapScreen() {
                 ))}
               </View>
             )}
+            <Pressable testID="toggle-steps-btn" onPress={() => setShowSteps((s) => !s)} style={styles.stepsToggle}>
+              <Text style={styles.stepsToggleText}>
+                {showSteps ? "Ocultar indicaciones" : `Ver indicaciones (${route.steps.length})`}
+              </Text>
+              <Icon name={showSteps ? "chevron-up" : "chevron-down"} size={18} color={colors.brandPrimary} />
+            </Pressable>
+            {showSteps &&
+              route.steps.map((s, i) => (
+                <View key={i} style={styles.stepRow} testID={`route-step-${i}`}>
+                  <Text style={styles.stepIdx}>{i + 1}</Text>
+                  <Text style={styles.stepText}>{s.instruction}</Text>
+                  <Text style={styles.stepDist}>{s.distance_km < 1 ? `${Math.round(s.distance_km * 1000)} m` : `${s.distance_km} km`}</Text>
+                </View>
+              ))}
           </ScrollView>
         )}
 
@@ -401,6 +468,54 @@ export default function MapScreen() {
 
 const useStyles = makeStyles((c) => ({
   container: { flex: 1, backgroundColor: c.surface },
+  results: {
+    marginTop: spacing.xs,
+    backgroundColor: c.surfaceSecondary,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: c.border,
+    overflow: "hidden",
+  },
+  resultRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: c.divider,
+    minHeight: 48,
+  },
+  resultName: { color: c.onSurface, fontSize: typography.base, fontWeight: "700" },
+  resultAddr: { color: c.muted, fontSize: typography.sm },
+  planRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    marginTop: spacing.md,
+    backgroundColor: c.surfaceTertiary,
+    borderRadius: radius.md,
+    padding: spacing.md,
+  },
+  planText: { color: c.onSurfaceSecondary, fontSize: typography.sm, flex: 1, fontWeight: "600" },
+  stepsToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: spacing.md,
+    minHeight: 44,
+  },
+  stepsToggleText: { color: c.brandPrimary, fontSize: typography.sm, fontWeight: "800" },
+  stepRow: {
+    flexDirection: "row",
+    gap: spacing.sm,
+    paddingVertical: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: c.divider,
+  },
+  stepIdx: { color: c.muted, fontSize: typography.sm, width: 22, fontWeight: "700" },
+  stepText: { color: c.onSurfaceSecondary, fontSize: typography.sm, flex: 1 },
+  stepDist: { color: c.muted, fontSize: typography.sm },
   map: { flex: 1 },
   topBar: {
     position: "absolute",
