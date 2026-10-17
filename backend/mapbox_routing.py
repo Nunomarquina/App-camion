@@ -198,6 +198,7 @@ CATEGORY_URL = "https://api.mapbox.com/search/searchbox/v1/category/{cat}"
 REST_CATEGORIES = [("rest_area", "Área de descanso"), ("service_area", "Área de servicio")]
 SEARCH_WINDOW_S = 40 * 60      # look for stops in the 40 min of driving before the limit
 MAX_OFF_ROUTE_KM = 1.5
+SAME_SIDE_TOLERANCE_KM = 0.025
 
 
 def _hav_km(a_lat, a_lng, b_lat, b_lng) -> float:
@@ -246,8 +247,7 @@ async def rest_areas_for_stops(points: List[List[float]], cum: Optional[List[flo
         async with httpx.AsyncClient(timeout=15) as client:
             results = await asyncio.gather(*[_category(client, c, bbox, prox) for c, _ in REST_CATEGORIES])
         seen, areas = set(), []
-        step = max(1, len(window) // 300)
-        sampled = list(range(start_i, end_i + 1, step)) or [end_i]
+        sampled = list(range(start_i, end_i + 1)) or [end_i]
         for (cat, label), feats in zip(REST_CATEGORIES, results):
             for f in feats:
                 coords = f.get("geometry", {}).get("coordinates")
@@ -262,6 +262,24 @@ async def rest_areas_for_stops(points: List[List[float]], cum: Optional[List[flo
                         best_i, best_d = i, d
                 if best_d is None or best_d > MAX_OFF_ROUTE_KM:
                     continue
+                # Same carriageway: in right-hand traffic, areas clearly on the left
+                # of the direction of travel belong to the opposite direction.
+                j = min(best_i, len(points) - 2)
+                lat0 = points[j][0]
+                kx = math.cos(math.radians(lat0)) * 111.32
+                dx = (points[j + 1][1] - points[j][1]) * kx
+                dy = (points[j + 1][0] - points[j][0]) * 110.54
+                vx = (lng - points[j][1]) * kx
+                vy = (lat - points[j][0]) * 110.54
+                seg = math.hypot(dx, dy)
+                if seg > 0:
+                    cross = dx * vy - dy * vx
+                    lateral = abs(cross) / seg
+                    if cross > 0 and lateral > SAME_SIDE_TOLERANCE_KM:
+                        continue
+                    side = "left" if cross > 0 else "right"
+                else:
+                    side = "unknown"
                 seen.add(fid)
                 p = f.get("properties", {})
                 areas.append({
@@ -269,6 +287,7 @@ async def rest_areas_for_stops(points: List[List[float]], cum: Optional[List[flo
                     "name": p.get("name") or label,
                     "address": p.get("full_address") or p.get("place_formatted") or "",
                     "type": label,
+                    "side": side,
                     "lat": lat,
                     "lng": lng,
                     "off_route_km": round(best_d, 2),

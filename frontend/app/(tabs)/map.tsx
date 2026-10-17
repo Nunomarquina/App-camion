@@ -16,6 +16,7 @@ import * as Location from "expo-location";
 import { api } from "@/src/api";
 import { storage } from "@/src/utils/storage";
 import { setNavigation, NavStep } from "@/src/nav-store";
+import { TripsSheet, Trip, paceLabel } from "@/src/components/trips-sheet";
 import { useRouter } from "expo-router";
 import { colors, spacing, radius, typography, makeStyles } from "@/src/theme";
 
@@ -34,6 +35,9 @@ type RouteOut = {
   truck_duration_s: number;
   avg_speed_kmh: number | null;
   tolls?: number;
+  base_truck_duration_s?: number;
+  pace_factor?: number;
+  pace_trips?: number;
   cum_m: number[] | null;
   cum_s: number[] | null;
   truck_adjusted_duration_min: number;
@@ -104,8 +108,32 @@ export default function MapScreen() {
   const [useCurrentHours, setUseCurrentHours] = useState(true);
   const [weightText, setWeightText] = useState("");
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [showTrips, setShowTrips] = useState(false);
+  const [pendingCalc, setPendingCalc] = useState(false);
   const router = useRouter();
   const styles = useStyles();
+
+  function repeatTrip(t: Trip) {
+    setShowTrips(false);
+    setResults([]);
+    setOrigin(t.origin);
+    setOriginMode("custom");
+    setOriginQuery(t.origin_name);
+    setUseCurrentHours(false);
+    setDestination(t.destination);
+    setDestQuery(t.destination_name);
+    if (t.weight_t) setWeightText(String(t.weight_t));
+    setRoute(null);
+    setPendingCalc(true);
+  }
+
+  useEffect(() => {
+    if (pendingCalc && origin && destination) {
+      setPendingCalc(false);
+      calculateRoute();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingCalc, origin, destination]);
 
   useEffect(() => {
     storage.getItem<string>("route_weight_t", "").then((w) => w && setWeightText(w));
@@ -129,12 +157,17 @@ export default function MapScreen() {
         stops: route.stops,
       },
       {
+        origin: origin ?? destination,
+        originName: originMode === "gps" ? "Mi ubicación" : originQuery || "Origen",
         destination,
         destinationName: destQuery || "Destino",
         vehicleId: vehicle?.id,
         vehicleMaxSpeed: vehicle?.max_speed_kmh ?? 90,
         weightT,
         useCurrentHours,
+        distanceKm: route.distance_km,
+        estimateS: route.truck_duration_s,
+        baseEstimateS: route.base_truck_duration_s ?? route.truck_duration_s,
       },
     );
     router.push("/navigate");
@@ -512,6 +545,11 @@ export default function MapScreen() {
         <View style={styles.sheetHandle} />
         {!route && (
         <>
+        <Pressable testID="open-trips-btn" onPress={() => setShowTrips(true)} style={styles.tripsBtn}>
+          <Icon name="history" size={18} color={colors.brandPrimary} />
+          <Text style={styles.tripsBtnText}>Rutas anteriores</Text>
+          <Icon name="chevron-right" size={18} color={colors.muted} />
+        </Pressable>
         <View style={styles.sheetTopRow}>
           <Pressable
             testID="tap-mode-origin"
@@ -629,6 +667,7 @@ export default function MapScreen() {
             <Text style={styles.avgText} testID="route-avg-speed">
               Media camión {route.avg_speed_kmh ?? "—"} km/h · coche {fmtMin(route.duration_min)}
               {route.tolls ? ` · ${route.tolls} peajes` : ""}
+              {route.pace_trips ? ` · ${paceLabel({ factor: route.pace_factor ?? 1, trips_used: route.pace_trips })}` : ""}
               {weightT ? ` · ${weightT} t` : ""}
             </Text>
             <View style={styles.actionRow}>
@@ -765,6 +804,7 @@ export default function MapScreen() {
         )}
       </View>
       )}
+      <TripsSheet visible={showTrips} onClose={() => setShowTrips(false)} onRepeat={repeatTrip} />
     </View>
   );
 }
@@ -772,6 +812,14 @@ export default function MapScreen() {
 const useStyles = makeStyles((c) => ({
   container: { flex: 1, backgroundColor: c.surface },
   gpsBtn: { width: 36, height: 36, alignItems: "center", justifyContent: "center" },
+  tripsBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    minHeight: 44,
+    marginBottom: spacing.sm,
+  },
+  tripsBtnText: { flex: 1, color: c.onSurface, fontSize: typography.sm, fontWeight: "700" },
   weightBox: {
     flexDirection: "row",
     alignItems: "center",

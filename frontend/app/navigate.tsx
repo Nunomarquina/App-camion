@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, Pressable, ActivityIndicator, Platform, Linking } from "react-native";
+import { View, Text, Pressable, ActivityIndicator, Platform, Linking, BackHandler } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Location from "expo-location";
-import { useKeepAwake } from "expo-keep-awake";
+import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import Icon from "@react-native-vector-icons/material-design-icons";
 import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from "@/src/components/truck-map";
 import { api } from "@/src/api";
+import { storage } from "@/src/utils/storage";
+import { speak, prefetch, stopVoice, releaseVoice } from "@/src/voice";
 import { getNavigation, setNavigation, clearNavigation, NavRoute } from "@/src/nav-store";
-import { cumulative, fmtDist, locate, maneuverIcon, pointAt, valueAt, LatLng } from "@/src/nav-geo";
+import { cumulative, distM, fmtDist, locate, maneuverIcon, pointAt, valueAt, LatLng } from "@/src/nav-geo";
 import { colors, spacing, radius, typography, makeStyles } from "@/src/theme";
 import { formatHM } from "@/src/format";
 
@@ -18,8 +20,27 @@ const DEMO_FACTOR = 10; // simulated time acceleration
 
 type Pos = { p: LatLng; heading: number; speedKmh: number };
 
+// Fixed distance buckets so the phrases can be pre-generated and cached.
+function announceBucket(speedKmh: number) {
+  return speedKmh > 60 ? 1000 : 300;
+}
+function distPhrase(m: number) {
+  return m >= 1000 ? `${m / 1000 === 1 ? "1 kilómetro" : `${m / 1000} kilómetros`}` : `${m} metros`;
+}
+function farPhrase(instr: string, bucket: number) {
+  return `En ${distPhrase(bucket)}, ${instr.charAt(0).toLowerCase()}${instr.slice(1)}`;
+}
+
 export default function NavigateScreen() {
-  useKeepAwake();
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    activateKeepAwakeAsync("nav").catch(() => {});
+    return () => {
+      try {
+        deactivateKeepAwake("nav");
+      } catch {}
+    };
+  }, []);
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const styles = useStyles();
@@ -38,6 +59,92 @@ export default function NavigateScreen() {
   const offCount = useRef(0);
   const lastReroute = useRef(0);
   const demoAlong = useRef(0);
+  const [muted, setMuted] = useState(false);
+  const mutedRef = useRef(false);
+  mutedRef.current = muted;
+  const spokenRef = useRef<Set<string>>(new Set());
+  const tripId = useRef<string | null>(null);
+  const tripDone = useRef(false);
+  const everDemo = useRef(demo);
+  const startedAt = useRef(Date.now());
+  const movingS = useRef(0);
+  const drivenM = useRef(0);
+  const lastFix = useRef<{ p: LatLng; t: number; speed: number } | null>(null);
+
+  if (demo) everDemo.current = true;
+
+  const say = useCallback((text: string) => {
+    if (!mutedRef.current) speak(text);
+  }, []);
+
+  // ---- Voice preference + trip record ----
+  useEffect(() => {
+    storage.getItem<boolean>("nav_voice_muted", false).then((m) => setMuted(!!m));
+    if (!nav) return;
+    const r = nav.request;
+    api<{ id: string }>("/trips", {
+      method: "POST",
+      body: JSON.stringify({
+        origin: r.origin,
+        origin_name: r.originName,
+        destination: r.destination,
+        destination_name: r.destinationName,
+        distance_km: r.distanceKm,
+        estimate_s: r.estimateS,
+        base_estimate_s: r.baseEstimateS,
+        weight_t: r.weightT,
+        vehicle_id: r.vehicleId,
+        use_current_hours: r.useCurrentHours,
+        simulated: everDemo.current,
+      }),
+    })
+      .then((t) => (tripId.current = t.id))
+      .catch(() => {});
+    return () => releaseVoice();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const finishTrip = useCallback(async (arrivedFlag: boolean) => {
+    if (tripDone.current || !tripId.current) return;
+    tripDone.current = true;
+    try {
+      await api(`/trips/${tripId.current}/finish`, {
+        method: "POST",
+        body: JSON.stringify({
+          moving_s: Math.round(movingS.current),
+          elapsed_s: Math.round((Date.now() - startedAt.current) / 1000),
+          driven_km: drivenM.current / 1000,
+          arrived: arrivedFlag,
+          simulated: everDemo.current,
+        }),
+      });
+    } catch {}
+  }, []);
+
+  // ---- Moving time / distance accumulation (only real movement counts) ----
+  useEffect(() => {
+    if (!pos) return;
+    const now = Date.now();
+    const prev = lastFix.current;
+    if (prev) {
+      const dt = (now - prev.t) / 1000;
+      const d = distM(prev.p, pos.p);
+      if (dt > 0 && dt < 30 && pos.speedKmh > 5 && prev.speed > 5) movingS.current += dt * (everDemo.current ? DEMO_FACTOR : 1);
+      if (d < 2000) drivenM.current += d;
+    }
+    lastFix.current = { p: pos.p, t: now, speed: pos.speedKmh };
+  }, [pos]);
+
+  // ---- Android back: stop audio and close trip ----
+  useEffect(() => {
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      stopVoice();
+      finishTrip(false);
+      clearNavigation();
+      return false;
+    });
+    return () => sub.remove();
+  }, [finishTrip]);
 
   const poly = useMemo(() => (route?.polyline ?? []) as LatLng[], [route]);
   const cumM = useMemo(() => (route?.cum_m && route.cum_m.length === poly.length ? route.cum_m : cumulative(poly)), [route, poly]);
@@ -122,6 +229,7 @@ export default function NavigateScreen() {
     async (from: LatLng) => {
       if (!nav) return;
       setRerouting(true);
+      say("Recalculando ruta");
       lastReroute.current = Date.now();
       try {
         const r = await api<NavRoute>("/routes/calculate", {
@@ -137,6 +245,7 @@ export default function NavigateScreen() {
         });
         hint.current = 0;
         demoAlong.current = 0;
+        spokenRef.current.clear();
         setNavigation(r, nav.request);
         setRoute(r);
       } catch {
@@ -146,8 +255,39 @@ export default function NavigateScreen() {
         offCount.current = 0;
       }
     },
-    [nav],
+    [nav, say],
   );
+
+  // ---- Voice guidance ----
+  useEffect(() => {
+    if (!progress || !pos || !route || arrived) return;
+    const along = progress.alongM;
+    const steps = route.steps;
+    const i = steps.findIndex((s) => s.along_m > along + 5);
+    if (i < 0) return;
+    const step = steps[i];
+    const toNext = step.along_m - along;
+    const bucket = announceBucket(pos.speedKmh);
+    const near = pos.speedKmh > 60 ? 150 : 60;
+    const keyFar = `${i}-far`;
+    const keyNear = `${i}-near`;
+    // Pre-generate the upcoming phrases
+    prefetch([farPhrase(step.instruction, bucket), step.instruction, ...(steps[i + 1] ? [steps[i + 1].instruction] : [])]);
+    if (toNext <= near && !spokenRef.current.has(keyNear)) {
+      spokenRef.current.add(keyNear);
+      spokenRef.current.add(keyFar);
+      say(step.instruction);
+    } else if (toNext <= bucket && toNext > near * 1.5 && !spokenRef.current.has(keyFar)) {
+      spokenRef.current.add(keyFar);
+      say(farPhrase(step.instruction, bucket));
+    }
+  }, [progress, pos, route, arrived, say]);
+
+  useEffect(() => {
+    if (!arrived) return;
+    say("Has llegado a tu destino");
+    finishTrip(true);
+  }, [arrived, say, finishTrip]);
 
   useEffect(() => {
     if (!progress || !pos || rerouting || arrived) return;
@@ -191,6 +331,8 @@ export default function NavigateScreen() {
   const tachoWarn = tachoLeft !== null && tachoLeft < remainingS && tachoLeft < 30 * 60;
 
   function exit() {
+    stopVoice();
+    finishTrip(arrived);
     clearNavigation();
     if (router.canGoBack()) router.back();
     else router.replace("/(tabs)/map");
@@ -288,6 +430,19 @@ export default function NavigateScreen() {
             <Icon name="crosshairs-gps" size={24} color={colors.onSurface} />
           </Pressable>
         )}
+        <Pressable
+          testID="nav-voice-toggle"
+          onPress={() => {
+            const m = !muted;
+            setMuted(m);
+            storage.setItem("nav_voice_muted", m);
+            if (m) stopVoice();
+            else speak("Guía por voz activada");
+          }}
+          style={styles.fab}
+        >
+          <Icon name={muted ? "volume-off" : "volume-high"} size={24} color={muted ? colors.muted : colors.onSurface} />
+        </Pressable>
         <Pressable
           testID="nav-demo-toggle"
           onPress={() => setDemo((d) => !d)}

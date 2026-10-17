@@ -31,12 +31,17 @@ export type NavRoute = {
 };
 
 export type NavRequest = {
+  origin: { lat: number; lng: number };
+  originName: string;
   destination: { lat: number; lng: number };
   destinationName: string;
   vehicleId?: string;
   vehicleMaxSpeed: number;
   weightT?: number;
   useCurrentHours: boolean;
+  distanceKm: number;
+  estimateS: number;
+  baseEstimateS: number;
 };
 
 let current: { route: NavRoute; request: NavRequest } | null = null;

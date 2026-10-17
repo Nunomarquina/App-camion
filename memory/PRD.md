@@ -38,6 +38,12 @@ Mapbox (pendiente: build nativo) · Todas las funciones · UE 561/2006 · Email/
 ## Iteration 5 (2026-10-17)
 - Truck time recalibrated with real trip Burgos → Misson FR (real 4h15-4h20): motorway 90×0.97, conventional min(car×0.92, 80×0.92/posted), +0.15%/t over 20t, +60s/toll, +10s/maneuver → 4h18 at 40t. Tolls count shown.
 
+## Iteration 6 (2026-10-17)
+- Trips history (Ruta → Rutas anteriores): repeat route, enter/correct real time manually, delete
+- Personal pace learning: median(actual moving / base estimate) of last 10 valid trips, shrunk n/(n+2), clamped 0.7-1.4, applied to new routes
+- Spanish voice guidance (OpenAI tts-1-hd, fallback tts-1, universal key, Mongo cache) with mute toggle; announces at 1 km/300 m and at maneuver, reroute, arrival
+- Rest areas filtered to same side of travel (right-hand traffic)
+
 ## Backlog
 - P0: Voice guidance (expo-speech blocked; would need TTS integration)
 - P0: Opposite-direction rest area filtering (motorway side)

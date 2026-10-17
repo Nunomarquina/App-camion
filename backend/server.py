@@ -9,6 +9,9 @@ import uuid
 from tacho_rules import compute_status, plan_breaks
 from detection_learning import analyze, default_profile
 import mapbox_routing
+import tts
+import re
+from fastapi import Response
 import bcrypt
 import jwt
 from pathlib import Path
@@ -624,6 +627,17 @@ async def calculate_route(body: RouteIn, user=Depends(get_current_user)):
     warnings.extend(route["violations"])
 
     status = await _compute_status(user["id"], body.tz_offset_min) if body.use_current_hours else None
+
+    # Personal pace learned from finished trips
+    pace = await _pace(user["id"])
+    base_s = route["truck_duration_s"]
+    if pace["factor"] != 1.0:
+        f = pace["factor"]
+        route["truck_duration_s"] = int(base_s * f)
+        route["_cum"] = [c * f for c in route["_cum"]] if route["_cum"] else None
+        route["cum_s"] = [round(c * f, 1) for c in route["cum_s"]] if route["cum_s"] else None
+        if route["truck_duration_s"]:
+            route["avg_speed_kmh"] = round(route["distance_km"] / route["truck_duration_s"] * 3600, 1)
     plan = plan_breaks(route["truck_duration_s"], status)
 
     # Locate each mandatory stop on the route and find rest areas before it
@@ -632,6 +646,9 @@ async def calculate_route(body: RouteIn, user=Depends(get_current_user)):
 
     return {
         **route,
+        "base_truck_duration_s": base_s,
+        "pace_factor": pace["factor"],
+        "pace_trips": pace["trips_used"],
         "truck_adjusted_duration_min": round(route["truck_duration_s"] / 60, 1),
         "warnings": warnings,
         "vehicle_restricted": bool(route["violations"]),
@@ -640,6 +657,165 @@ async def calculate_route(body: RouteIn, user=Depends(get_current_user)):
         "plan": plan,
         "stops": stops,
     }
+
+
+# ============ TRIPS (history + personal pace learning) ============
+PACE_MIN_KM = 20
+PACE_LAST_N = 10
+PACE_CLAMP = (0.7, 1.4)
+
+
+class TripIn(BaseModel):
+    origin: LatLng
+    origin_name: str = Field(default="Mi ubicación", max_length=200)
+    destination: LatLng
+    destination_name: str = Field(default="Destino", max_length=200)
+    distance_km: float = Field(ge=0)
+    estimate_s: int = Field(ge=0)
+    base_estimate_s: int = Field(ge=0)
+    weight_t: Optional[float] = Field(default=None, gt=0, le=100)
+    vehicle_id: Optional[str] = None
+    use_current_hours: bool = True
+    simulated: bool = False
+
+
+class TripFinishIn(BaseModel):
+    moving_s: int = Field(ge=0)
+    elapsed_s: int = Field(ge=0)
+    driven_km: float = Field(ge=0)
+    arrived: bool
+    simulated: bool = False
+
+
+class TripActualIn(BaseModel):
+    actual_s: int = Field(gt=0, le=48 * 3600)
+
+
+def _trip_valid(t: dict) -> bool:
+    return (not t.get("simulated") and t.get("actual_s") and t.get("base_estimate_s")
+            and t.get("distance_km", 0) >= PACE_MIN_KM
+            and 0.5 <= t["actual_s"] / t["base_estimate_s"] <= 2.0)
+
+
+async def _pace(user_id: str) -> dict:
+    cursor = db.trips.find({"user_id": user_id, "actual_s": {"$ne": None}}, {"_id": 0}).sort("created_at", -1).limit(50)
+    ratios = [t["actual_s"] / t["base_estimate_s"] async for t in cursor if _trip_valid(t)][:PACE_LAST_N]
+    if not ratios:
+        return {"factor": 1.0, "trips_used": 0}
+    ratios.sort()
+    n = len(ratios)
+    median = ratios[n // 2] if n % 2 else (ratios[n // 2 - 1] + ratios[n // 2]) / 2
+    # Shrink towards 1.0 while there are few trips
+    weight = n / (n + 2)
+    factor = 1 + (median - 1) * weight
+    factor = max(PACE_CLAMP[0], min(PACE_CLAMP[1], factor))
+    return {"factor": round(factor, 3), "trips_used": n}
+
+
+def _trip_out(t: dict) -> dict:
+    t = {k: v for k, v in t.items() if k not in ("_id", "user_id")}
+    t["valid_for_learning"] = bool(_trip_valid(t))
+    if t.get("actual_s") and t.get("base_estimate_s"):
+        t["ratio"] = round(t["actual_s"] / t["base_estimate_s"], 3)
+    return t
+
+
+@api_router.post("/trips", status_code=201)
+async def create_trip(body: TripIn, user=Depends(get_current_user)):
+    doc = {
+        **body.model_dump(),
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "created_at": now_utc(),
+        "finished_at": None,
+        "status": "in_progress",
+        "actual_s": None,
+        "actual_source": None,
+        "moving_s": None,
+        "elapsed_s": None,
+        "driven_km": None,
+    }
+    await db.trips.insert_one(doc)
+    return _trip_out(doc)
+
+
+@api_router.post("/trips/{trip_id}/finish")
+async def finish_trip(trip_id: str, body: TripFinishIn, user=Depends(get_current_user)):
+    trip = await db.trips.find_one({"id": trip_id, "user_id": user["id"]}, {"_id": 0})
+    if not trip:
+        raise HTTPException(404, "Trip not found")
+    complete = body.arrived and body.driven_km >= 0.8 * trip["distance_km"]
+    update = {
+        "finished_at": now_utc(),
+        "status": "arrived" if body.arrived else "cancelled",
+        "moving_s": body.moving_s,
+        "elapsed_s": body.elapsed_s,
+        "driven_km": round(body.driven_km, 2),
+        "simulated": trip.get("simulated") or body.simulated,
+    }
+    if complete and not update["simulated"]:
+        update["actual_s"] = body.moving_s
+        update["actual_source"] = "gps"
+    await db.trips.update_one({"id": trip_id}, {"$set": update})
+    trip.update(update)
+    return {"trip": _trip_out(trip), "pace": await _pace(user["id"])}
+
+
+@api_router.patch("/trips/{trip_id}/actual")
+async def set_trip_actual(trip_id: str, body: TripActualIn, user=Depends(get_current_user)):
+    """Driver enters the real moving time manually (e.g. trips driven without the app)."""
+    trip = await db.trips.find_one({"id": trip_id, "user_id": user["id"]}, {"_id": 0})
+    if not trip:
+        raise HTTPException(404, "Trip not found")
+    update = {"actual_s": body.actual_s, "actual_source": "manual", "simulated": False}
+    if trip.get("status") == "in_progress":
+        update["status"] = "arrived"
+        update["finished_at"] = now_utc()
+    await db.trips.update_one({"id": trip_id}, {"$set": update})
+    trip.update(update)
+    return {"trip": _trip_out(trip), "pace": await _pace(user["id"])}
+
+
+@api_router.get("/trips")
+async def list_trips(limit: int = 30, user=Depends(get_current_user)):
+    cursor = db.trips.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).limit(min(limit, 100))
+    return {"trips": [_trip_out(t) async for t in cursor], "pace": await _pace(user["id"])}
+
+
+@api_router.delete("/trips/{trip_id}", status_code=204)
+async def delete_trip(trip_id: str, user=Depends(get_current_user)):
+    res = await db.trips.delete_one({"id": trip_id, "user_id": user["id"]})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Trip not found")
+    return None
+
+
+# ============ VOICE (OpenAI TTS) ============
+class TTSIn(BaseModel):
+    text: str = Field(min_length=1, max_length=500)
+
+
+@api_router.post("/tts")
+async def create_tts(body: TTSIn, user=Depends(get_current_user)):
+    try:
+        key = await tts.get_or_create(db, body.text)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.error("TTS failed: %s", e)
+        raise HTTPException(502, "No se pudo generar la voz")
+    return {"key": key, "url": f"/api/tts/{key}.mp3"}
+
+
+@api_router.get("/tts/{key}.mp3")
+async def get_tts(key: str):
+    if not re.fullmatch(r"[0-9a-f]{64}", key):
+        raise HTTPException(404, "Not found")
+    audio = await tts.load(db, key)
+    if not audio:
+        raise HTTPException(404, "Not found")
+    return Response(content=audio, media_type="audio/mpeg",
+                    headers={"Cache-Control": "public, max-age=31536000"})
 
 
 # ============ APP SETUP ============
@@ -663,6 +839,8 @@ async def startup_db():
     await db.gps_samples.create_index("ts", expireAfterSeconds=30 * 24 * 3600)
     await db.card_activities.create_index([("user_id", 1), ("started_at", -1)])
     await db.detection_profiles.create_index("user_id", unique=True)
+    await db.trips.create_index([("user_id", 1), ("created_at", -1)])
+    await db.tts_cache.create_index("key", unique=True)
     logger.info("Database indexes ready.")
 
 

@@ -1,0 +1,33 @@
+{
+  "summary": "Iteration 7 full-stack testing (TTS voice, trips lifecycle, pace learning, same-side rest areas, repeat route, navigation). Backend: 15/15 new tests in test_iteration7.py pass. POST /api/tts generates mp3 via Emergent OpenAI TTS and caches by sha256 key (same text returns same key quickly). GET /api/tts/{key}.mp3 returns 200 audio/mpeg with cache header. Invalid hex and non-hex keys return 404. Empty text returns 422. Trips: POST /api/trips -> 201 with status in_progress and null actual_s. POST /finish with arrived=true and driven_km>=0.8*distance sets actual_s=moving_s and actual_source=gps. simulated=true -> actual_s stays null and simulated persists. PATCH /actual sets manual source and returns pace. GET /api/trips returns {trips, pace{factor, trips_used}}. DELETE -> 204. Other-user trip -> 404 for both DELETE and finish. Pace learning: after 3 trips with ratio 1.15 on Madrid->BCN @40t, pace_factor landed at 1.09 (expected shrinkage weight 0.6 over median 1.15), pace_trips=3, truck_duration_s == base * pace_factor. Same-side rest areas: Madrid->BCN produced zero 'left' side areas and no 'Sentido Zaragoza' names. Trips cleaned up afterwards so pace returned to {factor:1, trips_used:0}. Frontend (viewport 390x844): auth-email/auth-password/auth-submit login OK; tab-map, open-trips-btn opens trips-sheet; trips-pace renders ('Aún sin viajes para aprender tu ritmo' when empty). trip-card-0 visible; trip-edit-actual-0 -> trip-actual-input-0 '4:15' -> trip-actual-save-0 updates trip-actual-0 to 'Real 4h 15m (manual)'. trip-repeat-0 closes sheet and auto-calculates the route (route-summary visible, origin-input='Madrid'). start-navigation-btn opens navigate-screen; nav-voice-toggle present and toggles; nav-exit-btn returns to map-bottom-sheet. Starting navigation creates a Madrid->Barcelona trip in Rutas anteriores correctly marked simulated=true (web demo mode). ONE web-only bug: after nav-exit, Expo shows an Uncaught Error 'The wake lock with tag _r_0_ has not activated yet' coming from expo-keep-awake (navigate.tsx:6,35) because the browser never granted the wake lock and the hook's cleanup still attempts to release it. This does not affect native builds, but it currently crashes the web preview session after returning from navigation.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "exit navigation on web", "issue": "After pressing nav-exit-btn, Expo red screen shows 'Uncaught Error: The wake lock with tag _r_0_ has not activated yet'. Triggered by useKeepAwake() unmount cleanup when the browser never granted a wake lock. Reference: /app/frontend/app/navigate.tsx:6 (import), :35 (useKeepAwake()). Suggested fix: guard with Platform.OS !== 'web' or use useKeepAwake(tag, { suppressErrorOnWeb: true }) / try/catch inside a custom hook.", "affected_testIDs": ["nav-exit-btn", "navigate-screen"]}
+    ],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration7.py",
+    "/app/test_reports/pytest/iteration7.xml"
+  ],
+  "action_items": [
+    "Fix expo-keep-awake web crash in /app/frontend/app/navigate.tsx: skip useKeepAwake on web (Platform.OS==='web') or wrap in try/catch so returning to the map after a navigation session doesn't throw an uncaught error on the Expo web preview."
+  ],
+  "critical_code_review_comments": [
+    "tts.py cache_key includes voice/speed/model/format so changing voice regenerates audio - good. clean() strips URLs and markdown chars, caps at 500 chars - good.",
+    "server.py /tts endpoint maps ValueError -> 400 and other exceptions -> 502; empty text correctly rejected before hashing. /tts/{key}.mp3 enforces 64-hex regex before DB lookup - good.",
+    "server.py _trip_valid gates learning (distance>=20km, ratio 0.5-2.0, not simulated, not null actual) - matches spec. _pace median + shrink-to-1 (n/(n+2)) + clamp 0.7-1.4 is sound.",
+    "mapbox_routing.rest_areas_for_stops: cross product < 0 for right-hand side in RHT, lateral tolerance 25 m. Left-side areas are filtered out, matching spec.",
+    "map.tsx carries 1046 lines (not changed this iter) - still a candidate for splitting."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration7.py", "/app/test_reports/iteration_7.json", "/app/test_reports/pytest/iteration7.xml"],
+  "success_rate": {"backend": "100% (15/15)", "frontend": "100% of requested Ruta/Navegación flows; wake-lock web crash occurs after nav-exit but all requested testIDs responded as expected before and during that flow"},
+  "seed_data_creation": "Created and cleaned up: 3 Madrid-BCN trips for pace learning, 1 manual actual trip, 1 simulated trip from UI nav. All deleted via DELETE /api/trips/{id} at the end so driver@test.com pace returns to {factor:1.0, trips_used:0}.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "driver@test.com / test1234 is the shared account; keep pace neutral by cleaning up TEST trips. test_iteration7.py loads EXPO_PUBLIC_BACKEND_URL from env or falls back to /app/frontend/.env. TTS cache lives in db.tts_cache keyed by sha256 of text|voice|speed|model|mp3. Web preview: nav-exit currently throws expo-keep-awake uncaught error (see action_items) - not a backend issue.",
+  "rca_of_issue": "Wake-lock error RCA: expo-keep-awake uses the browser Screen Wake Lock API on web. The lock often fails to activate silently (requires user gesture + visibility) but the hook still schedules a release on unmount; the release promise rejects with 'The wake lock with tag <tag> has not activated yet'. Reproduce: login -> tab-map -> calculate any route -> start-navigation-btn -> nav-exit-btn. Mitigation (one-liner): `if (Platform.OS !== 'web') useKeepAwake();` is not valid (hook rule) - use a thin wrapper: `function useKeepAwakeSafe(){ if(Platform.OS==='web') return; useKeepAwake(); }` and call it unconditionally, or wrap deactivation in try/catch via activateKeepAwakeAsync/deactivateKeepAwake in a useEffect guarded by Platform.OS."
+}

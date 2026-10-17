@@ -20,7 +20,10 @@
         "backgroundColor": "#000000"
       },
       "package": "com.emergent.bigrigmaps.h7fdhh",
-      "permissions": ["ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION"]
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -43,7 +46,8 @@
       "expo-secure-store",
       "expo-web-browser",
       "expo-status-bar",
-      "@react-native-vector-icons/material-design-icons"
+      "@react-native-vector-icons/material-design-icons",
+      "expo-audio"
     ],
     "experiments": {
       "typedRoutes": true
