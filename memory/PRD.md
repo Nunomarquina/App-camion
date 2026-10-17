@@ -35,6 +35,9 @@ Mapbox (pendiente: build nativo) · Todas las funciones · UE 561/2006 · Email/
 - Fixed: search results hidden behind bottom sheet after a route; editing origin/destination now clears route; "Cambiar" button
 - Turn-by-turn navigator (/navigate): maneuver banner, ETA, remaining, speed vs vehicle max, tacho remaining, next mandatory stop & suggested area, off-route auto reroute, keep-awake, demo simulation (default on web)
 
+## Iteration 5 (2026-10-17)
+- Truck time recalibrated with real trip Burgos → Misson FR (real 4h15-4h20): motorway 90×0.97, conventional min(car×0.92, 80×0.92/posted), +0.15%/t over 20t, +60s/toll, +10s/maneuver → 4h18 at 40t. Tolls count shown.
+
 ## Backlog
 - P0: Voice guidance (expo-speech blocked; would need TTS integration)
 - P0: Opposite-direction rest area filtering (motorway side)

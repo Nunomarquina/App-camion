@@ -54,18 +54,35 @@ def _downsample_idx(n: int, max_points: int = 1500) -> List[int]:
     return idx
 
 
-def truck_segment_speed(d: float, t: float, posted_kmh: Optional[float], vehicle_max_kmh: float) -> float:
-    """Realistic truck speed (m/s) for a road segment.
-    - Never faster than Mapbox's free-flow car speed for that segment (curves, junctions, urban).
-    - Legal truck limits (EU/Spain >3.5t): 90 km/h on motorways (posted >= 100),
-      80 km/h on conventional roads (posted 80-99), posted limit below that.
-    - Never above the vehicle's own max speed (speed limiter)."""
-    car = d / t if t > 0 else vehicle_max_kmh / 3.6
-    if posted_kmh:
-        legal = 90 if posted_kmh >= 100 else 80 if posted_kmh >= 80 else posted_kmh
+MOTORWAY_FACTOR = 0.97      # real cruise below the 90 km/h limiter (traffic, merges, overtaking bans)
+CONVENTIONAL_FACTOR = 0.92  # heavier acceleration/braking, curves vs a car on non-motorway roads
+TOLL_PENALTY_S = 60         # truck lane + payment per toll booth
+MANEUVER_PENALTY_S = 10     # extra time per turn/roundabout/ramp for a heavy vehicle
+WEIGHT_FACTOR_PER_T = 0.0015  # slowdown per tonne above 20 t (climbs)
+MANEUVER_TYPES = {"turn", "roundabout", "rotary", "exit roundabout", "end of road", "fork",
+                  "off ramp", "on ramp", "merge", "roundabout turn"}
+
+
+def truck_segment_speed(d: float, t: float, posted_kmh: Optional[float], vehicle_max_kmh: float,
+                        weight_t: Optional[float] = None) -> float:
+    """Realistic truck speed (m/s) for a road segment, calibrated with real trips
+    (Burgos → Misson FR, 319 km: real 4h15-4h20 vs car 3h16).
+    - Motorways (posted >= 100): 90 km/h legal limit × cruise factor.
+    - Conventional roads: min(car free-flow × factor, 80 km/h legal × factor or posted limit).
+    - Never above the vehicle max speed; heavier loads are slightly slower."""
+    car = d / t * 3.6 if t > 0 else vehicle_max_kmh
+    if posted_kmh and posted_kmh >= 100:
+        speed = min(car, 90 * MOTORWAY_FACTOR)
+    elif posted_kmh and posted_kmh >= 80:
+        speed = min(car * CONVENTIONAL_FACTOR, 80 * CONVENTIONAL_FACTOR)
+    elif posted_kmh:
+        speed = min(car * CONVENTIONAL_FACTOR, posted_kmh)
     else:
-        legal = 90
-    return max(1.0, min(car, legal / 3.6, vehicle_max_kmh / 3.6))
+        speed = min(car * CONVENTIONAL_FACTOR, 90 * MOTORWAY_FACTOR)
+    speed = min(speed, vehicle_max_kmh)
+    if weight_t and weight_t > 20:
+        speed /= 1 + WEIGHT_FACTOR_PER_T * (weight_t - 20)
+    return max(1.0, speed / 3.6)
 
 
 async def truck_route(origin: Dict[str, float], destination: Dict[str, float],
@@ -114,11 +131,21 @@ async def truck_route(origin: Dict[str, float], destination: Dict[str, float],
             posted = None
             if i < len(speeds) and "speed" in speeds[i]:
                 posted = speeds[i]["speed"] * (1.609 if speeds[i].get("unit") == "mph" else 1)
-            truck_s += d / truck_segment_speed(d, t, posted, vmax)
+            truck_s += d / truck_segment_speed(d, t, posted, vmax, weight_t)
             cum.append(truck_s)
             cum_m.append(cum_m[-1] + d)
     if truck_s == 0:
         truck_s = route["duration"]
+
+    # Tolls and heavy-vehicle maneuvers: spread proportionally along the route
+    all_steps = [st for leg in route.get("legs", []) for st in leg.get("steps", [])]
+    tolls = sum(1 for st in all_steps for it in st.get("intersections", []) if it.get("toll_collection"))
+    maneuvers = sum(1 for st in all_steps if st.get("maneuver", {}).get("type") in MANEUVER_TYPES)
+    penalty = tolls * TOLL_PENALTY_S + maneuvers * MANEUVER_PENALTY_S
+    if truck_s > 0 and penalty:
+        k = (truck_s + penalty) / truck_s
+        cum = [c * k for c in cum]
+        truck_s += penalty
 
     points = [[lat, lng] for lat, lng in polyline.decode(route["geometry"], 6)]
     aligned = len(cum) == len(points)
@@ -154,6 +181,7 @@ async def truck_route(origin: Dict[str, float], destination: Dict[str, float],
         "distance_km": round(dist_m / 1000, 2),
         "duration_min": round(route["duration"] / 60, 1),
         "truck_duration_s": int(truck_s),
+        "tolls": tolls,
         "avg_speed_kmh": round(dist_m / truck_s * 3.6, 1) if truck_s else None,
         "polyline": [points[i] for i in idx],
         "cum_m": [round(cum_m[i], 1) for i in idx] if aligned else None,

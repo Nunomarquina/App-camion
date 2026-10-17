@@ -1,0 +1,26 @@
+{
+  "summary": "Iteration 6 full-stack test (truck speed model recalibration). Backend: 8/8 new tests in test_iteration6.py pass. Burgos(42.362,-3.645) -> Misson(43.587684,-0.942001) weight 40t returns ~319 km with truck_duration_s in the 4h05-4h30 window (target ~4h18), tolls>=1, avg_speed ~65-85 km/h, truck time >= car time. Same route without weight_t is slightly faster than at 40t and lands around ~4h11 as expected. Madrid->Barcelona at 40t falls in 7-8h15 window. Short urban Sol->Atocha truck/car ratio in 0.9-1.6. Legacy test_iteration4 Madrid-BCN assertions (<8h and >=6.5h) still pass. Frontend: login (auth-email/auth-password/auth-submit), tab-map, dest-input '1935 Route de la Gare Misson' + dest-search-btn + search-result-0 + route-weight-input=40 + calc-route-btn all work; route-truck-time renders (7h 21m from current-location origin), route-avg-speed includes 'peajes' ('Media camión 76.8 km/h · coche 5h 29m · 7 peajes · 40 t'); start-navigation-btn opens navigate screen with nav-banner visible. No regressions found.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration6.py",
+    "/app/test_reports/pytest/iteration6.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "mapbox_routing.py truck_segment_speed is tidy and uses constants - good. Weight slowdown formula divides by (1 + 0.0015*(w-20)) which produces ~3% slowdown at 40t, matching the real Burgos->Misson delta between 40t and no-weight runs.",
+    "map.tsx 1046 lines (carryover from iteration 5) - consider splitting; not blocking."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration6.py"],
+  "success_rate": {"backend": "100% (8/8 new + 6/6 iteration4 timing)", "frontend": "100% of requested Ruta tab flow"},
+  "seed_data_creation": "None. Used driver@test.com / test1234.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Truck time model constants (mapbox_routing.py 57-63): MOTORWAY_FACTOR=0.97, CONVENTIONAL_FACTOR=0.92, TOLL_PENALTY_S=60, MANEUVER_PENALTY_S=10, WEIGHT_FACTOR_PER_T=0.0015. Burgos->Misson @40t ~319km / ~4h18, no weight ~4h11. Madrid->BCN @40t ~7h21-7h51. test_iteration6.py reuses driver@test.com; test_iteration4.py registers fresh accounts. Frontend origin defaults to 'mi ubicación actual' so Ruta UI from current location to Misson returns ~565km/7h21m - this is expected behavior (not a backend bug).",
+  "rca_of_issue": "N/A - no bug this iteration. Recalibration confirmed working: at 40t over 319 km of mostly motorway (90*0.97=87.3 km/h cap) the system now reports ~4h15-4h20 vs the prior model that was under 4h."
+}

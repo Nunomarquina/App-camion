@@ -33,6 +33,7 @@ type RouteOut = {
   duration_min: number;
   truck_duration_s: number;
   avg_speed_kmh: number | null;
+  tolls?: number;
   cum_m: number[] | null;
   cum_s: number[] | null;
   truck_adjusted_duration_min: number;
@@ -627,6 +628,7 @@ export default function MapScreen() {
             </View>
             <Text style={styles.avgText} testID="route-avg-speed">
               Media camión {route.avg_speed_kmh ?? "—"} km/h · coche {fmtMin(route.duration_min)}
+              {route.tolls ? ` · ${route.tolls} peajes` : ""}
               {weightT ? ` · ${weightT} t` : ""}
             </Text>
             <View style={styles.actionRow}>
