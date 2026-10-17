@@ -9,6 +9,7 @@ import { StatusBar } from "expo-status-bar";
 import { ErrorBoundary } from "@/src/components/error-boundary";
 import { queryClient } from "@/src/query-client";
 import { AuthProvider } from "@/src/auth-context";
+import "@/src/background-nav";
 import { colors } from "@/src/theme";
 
 LogBox.ignoreAllLogs(true);

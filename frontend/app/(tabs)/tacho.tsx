@@ -13,6 +13,7 @@ import {
 import { useGpsAutoTracking } from "@/src/gps-tracker";
 import { CardReportSheet, CardReport } from "@/src/components/card-report-sheet";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useRouter } from "expo-router";
 import Icon from "@react-native-vector-icons/material-design-icons";
 import * as Haptics from "expo-haptics";
 import { api } from "@/src/api";
@@ -72,6 +73,7 @@ const STATE_INFO: Record<
 
 export default function TachoScreen() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const { user, logout } = useAuth();
   const [status, setStatus] = useState<Status | null>(null);
   const [loading, setLoading] = useState(true);
@@ -193,9 +195,14 @@ export default function TachoScreen() {
               })}
             </Text>
           </View>
-          <Pressable testID="logout-btn" onPress={logout} hitSlop={10} style={styles.logout}>
-            <Icon name="logout" size={22} color={colors.muted} />
-          </Pressable>
+          <View style={{ flexDirection: "row", gap: spacing.sm }}>
+            <Pressable testID="settings-btn" onPress={() => router.push("/settings")} hitSlop={10} style={styles.logout}>
+              <Icon name="cog-outline" size={22} color={colors.muted} />
+            </Pressable>
+            <Pressable testID="logout-btn" onPress={logout} hitSlop={10} style={styles.logout}>
+              <Icon name="logout" size={22} color={colors.muted} />
+            </Pressable>
+          </View>
         </View>
 
         {/* Big remaining continuous driving */}

@@ -17,7 +17,12 @@ export function voiceError() {
 
 async function ensurePlayer() {
   if (!modeSet) {
-    await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: false, shouldPlayInBackground: false });
+    await setAudioModeAsync({
+      playsInSilentMode: true,
+      allowsRecording: false,
+      shouldPlayInBackground: true,
+      interruptionMode: "duckOthers",
+    });
     modeSet = true;
   }
   if (!player) player = createAudioPlayer(null);

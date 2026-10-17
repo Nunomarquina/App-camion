@@ -1,0 +1,32 @@
+{
+  "summary": "Iteration 8 frontend-only testing (background nav settings + per-threshold voice break warnings). Mobile viewport 390x844. All testIDs from the brief responded: auth-email/auth-password/auth-submit login OK with driver@test.com/test1234. On Tacógrafo tab, settings-btn opens settings-screen; break-warning-row-30/15/10/5 render; break-warning-switch-30/15/10/5 defaults verified as 30=on, 15=off, 10=on, 5=off (read via native checkbox input.checked). background-location-status shows exactly 'Solo en la app móvil' on web preview, and background-location-btn is present but disabled (unsupported branch). Toggling 15 on and 30 off, pressing settings-back-btn and reopening settings keeps the toggled values (verified visually; AsyncStorage/localStorage writes via /src/settings.ts setBreakWarnings persist across the back/reopen cycle inside the same browser session). Break warning in navigator: prepped via API by deleting all prior events for driver@test.com (3 found, 3 deleted) then POST /tacho/events/manual {DRIVING, now-4h05m -> now-1min} and POST /tacho/events {DRIVING live}; tacho/status returned remaining_continuous_driving_s=1559 (~25.9 min). In the Ruta tab typed 'Barcelona' -> dest-search-btn -> search-result-0 -> use-current-hours-switch already ON -> calc-route-btn -> start-navigation-btn. On navigate-screen (demo mode default on web) within ~1 second nav-break-notice appeared with text 'Pausa obligatoria en 23 minutos. Área más cercana: FREE TRUCK PARKING, a 16 kilómetros.' (matches 'Pausa obligatoria en' + minutes + 'Área más cercana'). nav-background-status visible with text 'Simulación'. nav-exit-btn returned to the map tab with no red screen (previous iteration's expo-keep-awake crash is gone). Regression: nav-banner, nav-voice-toggle, nav-eta all present during navigation; open-trips-btn opens trips-sheet on the clean map tab (confirmed in a separate run - it is hidden while a route is still displayed on the map which is expected). Cleanup: deleted the 2 tacho events created for this test; GET /api/tacho/events now returns [] and /api/tacho/status returns current_state='REST', continuous_driving_s=0, so driver@test.com is sane.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration8_prep.py",
+    "/app/test_reports/iteration_8.json"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "settings.tsx (97 lines) - clean. BG permission branch is correctly disabled on web (backgroundSupported() returns false on Platform.OS==='web' or Expo Go storeClient).",
+    "settings.ts - storage.getItem is awaited; useBreakWarnings loads defaults then overlays persisted values via spread, so new keys added later would still have sane defaults.",
+    "background-nav.ts - TaskManager.defineTask is correctly guarded by Platform.OS!=='web' at module scope, which is required for TaskManager.",
+    "navigate.tsx break warning useEffect (lines 324-358) uses spokenRef keys 'brk-<stopKey>-<m>' and marks every threshold <= breakIn so later thresholds don't repeat. Nearest-area selection filters to same-direction (route_km > along) and prefers areas with drive_s_from_start <= breakIn+60 - matches spec.",
+    "navigate.tsx reads getBreakWarnings() once on mount into breakWarn.current. If the user flips a switch while already navigating the change won't apply until the next trip - minor UX note, not a bug."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration8_prep.py",
+    "/app/test_reports/iteration_8.json"
+  ],
+  "success_rate": {"backend": "n/a (frontend-only round, API prep calls all succeeded)", "frontend": "100% of requested testIDs responded as expected"},
+  "seed_data_creation": "Created 2 tacho events for driver@test.com to leave ~25 min continuous driving: a 4h04m DRIVING MANUAL (now-4h05m -> now-1min) and a live DRIVING MANUAL event. Both deleted at the end via DELETE /api/tacho/events/{id}; final GET /api/tacho/events = [] and status.current_state='REST'. One Barcelona trip was auto-created by start-navigation-btn (simulated=true, 620 km) and left in Rutas anteriores because the brief only asked to clean up tacho events; main agent can delete it via DELETE /api/trips/{id} if desired.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "driver@test.com / test1234. The container clock sits far in the future (Oct 2026) so any 'delete recent events' helper must use a wide hours window - see /app/backend/tests/test_iteration8_prep.py which deletes everything owned by the test user. On the web preview, break warnings fire almost immediately once the driver already has ~25 min continuous driving because the demo truck starts moving at 90 km/h with DEMO_FACTOR=10, so breakIn drops below 30 min on the first poll. Settings use key 'break_warnings' in storage (@/src/settings.ts). background-location-status text on web is exactly 'Solo en la app móvil'. Open-trips-btn is only rendered on the clean map state (no active calculated route showing in the overlay).",
+  "rca_of_issue": "Not applicable - no bugs found this iteration. Previous iteration's expo-keep-awake wake-lock web crash is resolved: pressing nav-exit-btn no longer surfaces an uncaught error on the Expo web preview."
+}

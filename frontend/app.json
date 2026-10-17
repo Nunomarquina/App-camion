@@ -10,7 +10,8 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "Detecta conducción y calcula rutas para tu camión"
+        "NSLocationWhenInUseUsageDescription": "Detecta conducción y calcula rutas para tu camión",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Guía por voz con la pantalla bloqueada"
       },
       "bundleIdentifier": "com.emergent.bigrigmaps.h7fdhh"
     },
@@ -22,7 +23,10 @@
       "package": "com.emergent.bigrigmaps.h7fdhh",
       "permissions": [
         "ACCESS_FINE_LOCATION",
-        "ACCESS_COARSE_LOCATION"
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION"
       ]
     },
     "web": {
@@ -47,7 +51,23 @@
       "expo-web-browser",
       "expo-status-bar",
       "@react-native-vector-icons/material-design-icons",
-      "expo-audio"
+      [
+        "expo-audio",
+        {
+          "microphonePermission": false,
+          "enableBackgroundPlayback": true
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "isIosBackgroundLocationEnabled": true,
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true,
+          "locationAlwaysAndWhenInUsePermission": "Guía por voz con la pantalla bloqueada",
+          "locationWhenInUsePermission": "Detecta conducción y calcula rutas para tu camión"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

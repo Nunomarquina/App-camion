@@ -17,7 +17,7 @@ export type NavStop = {
   lat: number | null;
   lng: number | null;
   km: number | null;
-  areas: { id: string; name: string; type: string; lat: number; lng: number; route_km: number; minutes_before_limit: number }[];
+  areas: { id: string; name: string; type: string; lat: number; lng: number; route_km: number; minutes_before_limit: number; drive_s_from_start?: number }[];
 };
 
 export type NavRoute = {

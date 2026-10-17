@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, Pressable, ActivityIndicator, Platform, Linking, BackHandler } from "react-native";
+import { View, Text, Pressable, ActivityIndicator, Platform, Linking, BackHandler, AppState } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Location from "expo-location";
@@ -9,6 +9,8 @@ import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from "@/src/components/tr
 import { api } from "@/src/api";
 import { storage } from "@/src/utils/storage";
 import { speak, prefetch, stopVoice, releaseVoice } from "@/src/voice";
+import { startBackgroundNav, stopBackgroundNav } from "@/src/background-nav";
+import { BREAK_WARNING_OPTIONS, BreakWarnings, DEFAULT_BREAK_WARNINGS, getBreakWarnings } from "@/src/settings";
 import { getNavigation, setNavigation, clearNavigation, NavRoute } from "@/src/nav-store";
 import { cumulative, distM, fmtDist, locate, maneuverIcon, pointAt, valueAt, LatLng } from "@/src/nav-geo";
 import { colors, spacing, radius, typography, makeStyles } from "@/src/theme";
@@ -55,6 +57,7 @@ export default function NavigateScreen() {
   const [rerouting, setRerouting] = useState(false);
   const [arrived, setArrived] = useState(false);
   const [tachoLeft, setTachoLeft] = useState<number | null>(null);
+  const [breakNotice, setBreakNotice] = useState<string | null>(null);
   const hint = useRef(0);
   const offCount = useRef(0);
   const lastReroute = useRef(0);
@@ -72,6 +75,13 @@ export default function NavigateScreen() {
   const lastFix = useRef<{ p: LatLng; t: number; speed: number } | null>(null);
 
   if (demo) everDemo.current = true;
+  const [bgActive, setBgActive] = useState(false);
+  const appActive = useRef(true);
+  const tachoInfo = useRef<{ left: number; state: string; at: number } | null>(null);
+  const breakWarn = useRef<BreakWarnings>(DEFAULT_BREAK_WARNINGS);
+  useEffect(() => {
+    getBreakWarnings().then((w) => (breakWarn.current = w));
+  }, []);
 
   const say = useCallback((text: string) => {
     if (!mutedRef.current) speak(text);
@@ -164,19 +174,30 @@ export default function NavigateScreen() {
   // ---- Tacho remaining driving (poll) ----
   useEffect(() => {
     const load = () =>
-      api<{ remaining_driving_now_s: number }>(`/tacho/status?tz_offset_min=${-new Date().getTimezoneOffset()}`)
-        .then((s) => setTachoLeft(s.remaining_driving_now_s))
+      api<{ remaining_driving_now_s: number; current_state: string }>(`/tacho/status?tz_offset_min=${-new Date().getTimezoneOffset()}`)
+        .then((s) => {
+          setTachoLeft(s.remaining_driving_now_s);
+          tachoInfo.current = { left: s.remaining_driving_now_s, state: s.current_state, at: Date.now() };
+        })
         .catch(() => {});
     load();
     const i = setInterval(load, 60000);
     return () => clearInterval(i);
   }, []);
 
-  // ---- Real GPS ----
+  // ---- Real GPS (background-capable in installed builds, foreground watch otherwise) ----
+  const hasRoute = !!route;
   useEffect(() => {
-    if (demo || Platform.OS === "web" || !route) return;
+    if (demo || Platform.OS === "web" || !hasRoute) return;
     let sub: Location.LocationSubscription | null = null;
     let cancelled = false;
+    let usingBg = false;
+    const onLoc = (l: Location.LocationObject) =>
+      setPos({
+        p: [l.coords.latitude, l.coords.longitude],
+        heading: l.coords.heading && l.coords.heading >= 0 ? l.coords.heading : 0,
+        speedKmh: Math.max(0, (l.coords.speed ?? 0) * 3.6),
+      });
     (async () => {
       let res = await Location.getForegroundPermissionsAsync();
       if (res.status !== "granted" && res.canAskAgain) res = await Location.requestForegroundPermissionsAsync();
@@ -186,21 +207,31 @@ export default function NavigateScreen() {
       }
       setPerm("granted");
       if (cancelled) return;
-      sub = await Location.watchPositionAsync(
-        { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 1000, distanceInterval: 3 },
-        (l) =>
-          setPos({
-            p: [l.coords.latitude, l.coords.longitude],
-            heading: l.coords.heading && l.coords.heading >= 0 ? l.coords.heading : 0,
-            speedKmh: Math.max(0, (l.coords.speed ?? 0) * 3.6),
-          }),
-      );
+      try {
+        usingBg = await startBackgroundNav(onLoc);
+      } catch {
+        usingBg = false;
+      }
+      setBgActive(usingBg);
+      if (!usingBg && !cancelled) {
+        sub = await Location.watchPositionAsync(
+          { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 1000, distanceInterval: 3 },
+          onLoc,
+        );
+      }
     })();
     return () => {
       cancelled = true;
       sub?.remove();
+      stopBackgroundNav();
     };
-  }, [demo, route]);
+  }, [demo, hasRoute]);
+
+  // ---- App state (skip camera animation while locked/backgrounded) ----
+  useEffect(() => {
+    const s = AppState.addEventListener("change", (st) => (appActive.current = st === "active"));
+    return () => s.remove();
+  }, []);
 
   // ---- Demo / simulation along the route ----
   useEffect(() => {
@@ -217,7 +248,7 @@ export default function NavigateScreen() {
 
   // ---- Camera follow ----
   useEffect(() => {
-    if (!pos || !follow) return;
+    if (!pos || !follow || !appActive.current) return;
     mapRef.current?.animateCamera?.(
       { center: { latitude: pos.p[0], longitude: pos.p[1] }, heading: pos.heading, pitch: 50, zoom: 17 },
       { duration: 900 },
@@ -288,6 +319,43 @@ export default function NavigateScreen() {
     say("Has llegado a tu destino");
     finishTrip(true);
   }, [arrived, say, finishTrip]);
+
+  // ---- Voice warnings before mandatory breaks (settings: 30/15/10/5 min) ----
+  useEffect(() => {
+    if (!progress || !route || arrived) return;
+    const along = progress.alongM;
+    const driven = valueAt(cumM, cumS, along);
+    const stopIdx = route.stops.findIndex((s) => s.at_drive_s > driven);
+    let breakIn = stopIdx >= 0 ? route.stops[stopIdx].at_drive_s - driven : Infinity;
+    let key = stopIdx >= 0 ? `stop${stopIdx}` : "none";
+    const t = tachoInfo.current;
+    if (t && t.state === "DRIVING") {
+      const tLeft = t.left - (Date.now() - t.at) / 1000;
+      if (tLeft < breakIn) {
+        breakIn = tLeft;
+        key = `tacho${Math.round(t.at / 600000)}`;
+      }
+    }
+    if (!isFinite(breakIn) || breakIn <= 0) return;
+    const enabled = BREAK_WARNING_OPTIONS.filter((m) => breakWarn.current[m]);
+    const due = enabled.filter((m) => breakIn <= m * 60 && !spokenRef.current.has(`brk-${key}-${m}`));
+    if (due.length === 0) return;
+    BREAK_WARNING_OPTIONS.filter((m) => breakIn <= m * 60).forEach((m) => spokenRef.current.add(`brk-${key}-${m}`));
+    const areas = route.stops.flatMap((s) => s.areas).filter((a) => a.route_km * 1000 > along);
+    const before = areas.filter((a) => a.drive_s_from_start === undefined || a.drive_s_from_start <= driven + breakIn + 60);
+    const pool = before.length ? before : areas;
+    const nearest = pool.sort((a, b) => a.route_km - b.route_km)[0];
+    const mins = Math.max(1, Math.round(breakIn / 60));
+    let text = `Pausa obligatoria en ${mins} minutos.`;
+    if (nearest) {
+      const km = Math.max(1, Math.round(nearest.route_km - along / 1000));
+      text += ` Área más cercana: ${nearest.name}, a ${km} kilómetro${km === 1 ? "" : "s"}.`;
+    } else {
+      text += " No hay áreas de descanso localizadas en la ruta antes del límite.";
+    }
+    setBreakNotice(text);
+    say(text);
+  }, [progress, route, arrived, cumM, cumS, say]);
 
   useEffect(() => {
     if (!progress || !pos || rerouting || arrived) return;
@@ -491,6 +559,14 @@ export default function NavigateScreen() {
             {progress ? ` (a ${fmtDist(nextArea.route_km * 1000 - along)})` : ""}
           </Text>
         )}
+        {breakNotice && (
+          <Text style={styles.breakNotice} numberOfLines={2} testID="nav-break-notice">
+            {breakNotice}
+          </Text>
+        )}
+        <Text style={styles.bgText} testID="nav-background-status">
+          {bgActive ? "Segundo plano activo: sigue guiando con la pantalla bloqueada" : demo ? "Simulación" : "Solo con la app abierta (activa el segundo plano en Ajustes)"}
+        </Text>
         {progress && progress.offM > OFF_ROUTE_M && !rerouting && (
           <Text style={styles.offText} testID="nav-off-route">Fuera de ruta ({Math.round(progress.offM)} m)</Text>
         )}
@@ -612,4 +688,6 @@ const useStyles = makeStyles((c) => ({
   infoText: { color: c.onSurfaceSecondary, fontSize: typography.sm, fontWeight: "700", flexShrink: 1 },
   areaText: { color: c.info, fontSize: typography.sm },
   offText: { color: c.warning, fontSize: typography.sm, fontWeight: "700" },
+  breakNotice: { color: c.warning, fontSize: typography.sm, fontWeight: "700" },
+  bgText: { color: c.muted, fontSize: 11 },
 }));

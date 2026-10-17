@@ -44,6 +44,10 @@ Mapbox (pendiente: build nativo) · Todas las funciones · UE 561/2006 · Email/
 - Spanish voice guidance (OpenAI tts-1-hd, fallback tts-1, universal key, Mongo cache) with mute toggle; announces at 1 km/300 m and at maneuver, reroute, arrival
 - Rest areas filtered to same side of travel (right-hand traffic)
 
+## Iteration 7 (2026-10-17)
+- Background navigation: expo-location startLocationUpdatesAsync + TaskManager (src/background-nav.ts, defined in root layout), Android foreground service notification, iOS background location; expo-audio background playback (duckOthers). Falls back to foreground watch in Expo Go/web. Requires native build.
+- Settings screen (gear on Tacógrafo): separate voice break warnings 30/15/10/5 min (defaults 30+10), nearest rest area ahead announced; background permission request with Open Settings fallback
+
 ## Backlog
 - P0: Voice guidance (expo-speech blocked; would need TTS integration)
 - P0: Opposite-direction rest area filtering (motorway side)
