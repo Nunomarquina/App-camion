@@ -22,7 +22,6 @@ type Vehicle = {
   length_m: number;
   width_m: number;
   height_m: number;
-  weight_t: number;
   axles: number;
   max_speed_kmh: number;
   hazmat: boolean;
@@ -43,7 +42,6 @@ const EMPTY = {
   length_m: "16.5",
   width_m: "2.55",
   height_m: "4.0",
-  weight_t: "40",
   axles: "5",
   max_speed_kmh: "90",
   hazmat: false,
@@ -79,7 +77,6 @@ export default function VehicleScreen() {
       length_m: String(v.length_m),
       width_m: String(v.width_m),
       height_m: String(v.height_m),
-      weight_t: String(v.weight_t),
       axles: String(v.axles),
       max_speed_kmh: String(v.max_speed_kmh),
       hazmat: v.hazmat,
@@ -105,12 +102,11 @@ export default function VehicleScreen() {
       length_m: num(form.length_m),
       width_m: num(form.width_m),
       height_m: num(form.height_m),
-      weight_t: num(form.weight_t),
       axles: parseInt(form.axles, 10),
       max_speed_kmh: parseInt(form.max_speed_kmh, 10),
       hazmat: form.hazmat,
     };
-    if ([body.length_m, body.width_m, body.height_m, body.weight_t, body.axles, body.max_speed_kmh].some((n) => isNaN(n))) {
+    if ([body.length_m, body.width_m, body.height_m, body.axles, body.max_speed_kmh].some((n) => isNaN(n))) {
       setMsg({ text: "Revisa los valores numéricos", ok: false });
       return;
     }
@@ -193,7 +189,7 @@ export default function VehicleScreen() {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.vName}>{v.name}{v.plate ? ` · ${v.plate}` : ""}</Text>
                   <Text style={styles.vDims}>
-                    {v.length_m}m × {v.width_m}m × {v.height_m}m · {v.weight_t}t · {v.axles} ejes
+                    {v.length_m}m × {v.width_m}m × {v.height_m}m · {v.axles} ejes · {v.max_speed_kmh} km/h
                     {v.hazmat ? " · ADR" : ""}
                   </Text>
                 </View>
@@ -257,7 +253,6 @@ export default function VehicleScreen() {
           {field("length_m", "Longitud", "m")}
           {field("width_m", "Anchura", "m")}
           {field("height_m", "Altura", "m")}
-          {field("weight_t", "Peso total", "t")}
           {field("axles", "Ejes", "")}
           {field("max_speed_kmh", "Vel. máx.", "km/h")}
         </View>

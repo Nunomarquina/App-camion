@@ -1,0 +1,34 @@
+{
+  "summary": "Iteration 4 backend tests: 14/14 pass (test_iteration4.py). Verified: (1) POST /api/routes/calculate validation of weight_t — 0, negative and >100 all return 422; weight_t=24 produces warnings[0] containing '24' and 't' (weight mentioned). (2) Madrid(40.4168,-3.7038)->Barcelona(41.3851,2.1734): avg_speed_kmh ∈ [75,95], truck_duration_s ∈ [6.5h, 8h) (realistic motorway truck time, NOT >8h), truck_duration_s ≥ car duration; cum_m and cum_s arrays align with polyline length and are monotonic; steps carry type/modifier/lat/lng/along_m with monotonic along_m. (3) Short urban Sol->Atocha: truck/car ratio within [0.9, 1.4] (truck ≈ car time on city streets). (4) /api/vehicles POST and PUT accept payload WITHOUT weight_t (201/200); extra weight_t field is silently ignored and never leaks back in Vehicle response. Response never contains weight_t. Frontend UI run from Playwright attempted but the automated login step did not latch onto the sign-in form on the preview URL (login testID selectors on the Entrar screen did not match [data-testid=login-email]) so UI flows (bug repro #3, start-navigation, demo nav timeline) were NOT executed end-to-end this iteration. Code review of /app/frontend/app/(tabs)/map.tsx confirms the fix for user bug (3): both origin-input and dest-input call clearRoute() on each keystroke (lines 405-440), and the bottom sheet is hidden while results are non-empty (line 503 `{results.length === 0 && ...}`) so the search-results list is always clickable and the calc-route-btn re-appears once a new result is picked. route-weight-input value is persisted via storage.getItem/setItem('route_weight_t') on mount and after each calculateRoute (lines 109-111, 240). start-navigation-btn pushes to /navigate; navigate.tsx has demo=Platform.OS==='web' default (line 32) with DEMO_SPEED_KMH=90 and DEMO_FACTOR=10 (250 m per interval ≈ 2.5m/s×100 scale), nav-banner/nav-next-distance/nav-next-instruction/nav-eta/nav-remaining/nav-tacho-left/nav-next-stop/nav-speed/nav-demo-toggle/nav-exit-btn and nav-no-route/nav-back-btn present and wired. No deprecated Expo packages observed in map.tsx or navigate.tsx (expo-location, expo-keep-awake are current).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration4.py",
+    "/app/test_reports/pytest/iteration4.xml"
+  ],
+  "action_items": [
+    "Main agent: self-verify the frontend bug (#3) repro in the browser (change dest after a route exists -> search-results visible -> pick -> calc-route-btn re-appears -> new route-summary with different route-distance). The automated login did not run in this iteration so UI verification was by code read-through only.",
+    "Confirm the login screen testIDs so the next testing iteration can reach the Ruta tab automatically (currently the Entrar screen's email/password inputs do not expose login-email/login-password/login-submit testIDs that match)."
+  ],
+  "critical_code_review_comments": [
+    "map.tsx is ~1050 lines — approaching the 700-line split threshold; consider extracting the search bar, bottom sheet form and route summary/details into child components for maintainability.",
+    "mapbox_routing.truck_segment_speed uses posted speed but ignores urban-vs-highway curvature; the car-time floor already protects against unrealistic truck speeds on winding roads but a future improvement is to apply a small (~5%) truck penalty on sustained curves.",
+    "navigate.tsx DEMO_FACTOR=10 accelerates time 10x on web preview; the ETA on the panel is computed from real wall-clock + remainingS so it jumps when the demo is active. Consider showing a 'simulación' tag on the ETA, not only on remaining text, to avoid confusion."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration4.py",
+    "/app/test_reports/iteration_4.json",
+    "/app/test_reports/pytest/iteration4.xml"
+  ],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "code-review only (UI automation blocked at login step)"},
+  "seed_data_creation": "Each pytest registers disposable it4_* users via /api/auth/register. No modification to driver@test.com or seed vehicles.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Frontend login testIDs: the preview home page shows the Entrar screen with EMAIL/CONTRASEÑA inputs but [data-testid=login-email] / [data-testid=login-password] / [data-testid=login-submit] were not found by Playwright. Inspect the auth screen component to confirm the correct testIDs (e.g. may be auth-email / auth-password / auth-submit or raw name='email'); update frontend to add those three testIDs if missing — unblocks full E2E for all future iterations. All backend iteration tests (test_backend_full + test_iteration2 + test_iteration3 + test_iteration4 = 68) are green against EXPO_PUBLIC_BACKEND_URL=https://big-rig-maps-1.preview.emergentagent.com. Weight validation gt=0,le=100 is enforced in server.RouteIn.",
+  "rca_of_issue": "User bug #3 (post-calculation inputs 'stuck' with previous route) RCA from code review: in map.tsx, onChangeText for both origin-input and dest-input calls clearRoute() which clears route state and detailsOpen/showSteps/error. Combined with the conditional `{results.length === 0 && <bottomSheet/>}` (line 503), the previously-rendered route-summary no longer intercepts the search-results dropdown. Picking a new result then shows the form again (because !route) with calc-route-btn enabled. This resolves the stuck-route behaviour reported in iteration 4 user feedback."
+}

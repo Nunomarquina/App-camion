@@ -14,6 +14,9 @@ import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from "@/src/components/tr
 import Icon from "@react-native-vector-icons/material-design-icons";
 import * as Location from "expo-location";
 import { api } from "@/src/api";
+import { storage } from "@/src/utils/storage";
+import { setNavigation, NavStep } from "@/src/nav-store";
+import { useRouter } from "expo-router";
 import { colors, spacing, radius, typography, makeStyles } from "@/src/theme";
 
 type Pt = { lat: number; lng: number };
@@ -22,22 +25,22 @@ type Vehicle = {
   name: string;
   is_active: boolean;
   height_m: number;
-  weight_t: number;
   length_m: number;
+  max_speed_kmh: number;
 };
 type RouteOut = {
   distance_km: number;
   duration_min: number;
+  truck_duration_s: number;
+  avg_speed_kmh: number | null;
+  cum_m: number[] | null;
+  cum_s: number[] | null;
   truck_adjusted_duration_min: number;
   polyline: [number, number][];
   warnings: string[];
   violations: string[];
   vehicle_applied: boolean;
-  steps: {
-    instruction: string;
-    distance_km: number;
-    duration_min: number;
-  }[];
+  steps: NavStep[];
   vehicle_restricted: boolean;
   plan: {
     breaks_45min: number;
@@ -98,7 +101,50 @@ export default function MapScreen() {
   const [originQuery, setOriginQuery] = useState("");
   const [searchField, setSearchField] = useState<"origin" | "destination">("destination");
   const [useCurrentHours, setUseCurrentHours] = useState(true);
+  const [weightText, setWeightText] = useState("");
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const router = useRouter();
   const styles = useStyles();
+
+  useEffect(() => {
+    storage.getItem<string>("route_weight_t", "").then((w) => w && setWeightText(w));
+  }, []);
+
+  const weightT = (() => {
+    const n = parseFloat(weightText.replace(",", "."));
+    return isNaN(n) || n <= 0 ? undefined : n;
+  })();
+
+  function startNavigation() {
+    if (!route || !destination) return;
+    setNavigation(
+      {
+        distance_km: route.distance_km,
+        truck_duration_s: route.truck_duration_s,
+        polyline: route.polyline,
+        cum_m: route.cum_m,
+        cum_s: route.cum_s,
+        steps: route.steps,
+        stops: route.stops,
+      },
+      {
+        destination,
+        destinationName: destQuery || "Destino",
+        vehicleId: vehicle?.id,
+        vehicleMaxSpeed: vehicle?.max_speed_kmh ?? 90,
+        weightT,
+        useCurrentHours,
+      },
+    );
+    router.push("/navigate");
+  }
+
+  function clearRoute() {
+    setRoute(null);
+    setDetailsOpen(false);
+    setShowSteps(false);
+    setError(null);
+  }
 
   function setCustomOrigin(p: Pt, label: string) {
     setOrigin(p);
@@ -178,17 +224,30 @@ export default function MapScreen() {
       setError("Marca origen y destino");
       return;
     }
+    if (weightText.trim() && weightT === undefined) {
+      setError("Peso no válido");
+      return;
+    }
+    if (weightT !== undefined && weightT > 100) {
+      setError("Peso máximo 100 t");
+      return;
+    }
     setLoadingRoute(true);
     setError(null);
+    setResults([]);
+    setRoute(null);
+    setDetailsOpen(false);
+    storage.setItem("route_weight_t", weightText.trim());
     try {
       const r = await api<RouteOut>("/routes/calculate", {
         method: "POST",
         body: JSON.stringify({
-          origin: { ...origin, speed_kmh: 0 },
-          destination: { ...destination, speed_kmh: 0 },
+          origin: { lat: origin.lat, lng: origin.lng },
+          destination: { lat: destination.lat, lng: destination.lng },
           vehicle_id: vehicle?.id,
           tz_offset_min: -new Date().getTimezoneOffset(),
           use_current_hours: useCurrentHours,
+          ...(weightT !== undefined ? { weight_t: weightT } : {}),
         }),
       });
       setRoute(r);
@@ -343,7 +402,10 @@ export default function MapScreen() {
             placeholder={originMode === "gps" ? "Salida: mi ubicación actual" : "Lugar de salida"}
             placeholderTextColor={originMode === "gps" ? colors.success : colors.muted}
             value={originQuery}
-            onChangeText={setOriginQuery}
+            onChangeText={(t) => {
+              setOriginQuery(t);
+              clearRoute();
+            }}
             onSubmitEditing={() => searchPlaces("origin")}
             returnKeyType="search"
           />
@@ -372,7 +434,10 @@ export default function MapScreen() {
             placeholder="Buscar destino (ciudad, dirección)"
             placeholderTextColor={colors.muted}
             value={destQuery}
-            onChangeText={setDestQuery}
+            onChangeText={(t) => {
+              setDestQuery(t);
+              clearRoute();
+            }}
             onSubmitEditing={() => searchPlaces("destination")}
             returnKeyType="search"
           />
@@ -434,14 +499,18 @@ export default function MapScreen() {
         </View>
       </View>
 
-      {/* Bottom sheet */}
+      {/* Bottom sheet (hidden while choosing a search result so it never covers the list) */}
+      {results.length === 0 && (
       <View
         style={[
           styles.bottomSheet,
           { paddingBottom: spacing.md },
         ]}
+        testID="map-bottom-sheet"
       >
         <View style={styles.sheetHandle} />
+        {!route && (
+        <>
         <View style={styles.sheetTopRow}>
           <Pressable
             testID="tap-mode-origin"
@@ -466,6 +535,26 @@ export default function MapScreen() {
               {destination ? "Destino fijado" : "Toca para destino"}
             </Text>
           </Pressable>
+        </View>
+
+        <View style={styles.hoursRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.hoursTitle}>Peso total de esta carga</Text>
+            <Text style={styles.hoursSub}>Evita puentes y vías con límite de peso</Text>
+          </View>
+          <View style={styles.weightBox}>
+            <TextInput
+              testID="route-weight-input"
+              style={styles.weightInput}
+              value={weightText}
+              onChangeText={setWeightText}
+              placeholder="40"
+              placeholderTextColor={colors.muted}
+              keyboardType="decimal-pad"
+              maxLength={5}
+            />
+            <Text style={styles.weightUnit}>t</Text>
+          </View>
         </View>
 
         <View style={styles.hoursRow}>
@@ -513,10 +602,12 @@ export default function MapScreen() {
             {error}
           </Text>
         )}
+        </>
+        )}
 
         {route && (
-          <ScrollView style={{ maxHeight: 280 }} testID="route-details">
-            <View style={styles.statGrid}>
+          <View testID="route-summary">
+            <View style={[styles.statGrid, { marginTop: 0 }]}>
               <View style={styles.statCell}>
                 <Text style={styles.statCellLabel}>DISTANCIA</Text>
                 <Text style={styles.statCellValue} testID="route-distance">{Math.round(route.distance_km)} km</Text>
@@ -534,6 +625,35 @@ export default function MapScreen() {
                 </Text>
               </View>
             </View>
+            <Text style={styles.avgText} testID="route-avg-speed">
+              Media camión {route.avg_speed_kmh ?? "—"} km/h · coche {fmtMin(route.duration_min)}
+              {weightT ? ` · ${weightT} t` : ""}
+            </Text>
+            <View style={styles.actionRow}>
+              <Pressable testID="route-clear-btn" onPress={clearRoute} style={styles.secondaryBtn}>
+                <Icon name="pencil-outline" size={20} color={colors.onSurface} />
+                <Text style={styles.secondaryText}>Cambiar</Text>
+              </Pressable>
+              <Pressable testID="start-navigation-btn" onPress={startNavigation} style={styles.startBtn}>
+                <Icon name="navigation-variant" size={22} color={colors.onBrandPrimary} />
+                <Text style={styles.calcBtnText}>INICIAR RUTA</Text>
+              </Pressable>
+            </View>
+            <Pressable
+              testID="toggle-details-btn"
+              onPress={() => setDetailsOpen((o) => !o)}
+              style={styles.stepsToggle}
+            >
+              <Text style={styles.stepsToggleText}>
+                {detailsOpen ? "Ocultar detalles" : `Detalles · ${route.stops.length} parada(s) · ${route.warnings.length} aviso(s)`}
+              </Text>
+              <Icon name={detailsOpen ? "chevron-down" : "chevron-up"} size={18} color={colors.brandPrimary} />
+            </Pressable>
+          </View>
+        )}
+
+        {route && detailsOpen && (
+          <ScrollView style={{ maxHeight: 260 }} testID="route-details">
             <View style={styles.planRow} testID="route-plan">
               <Icon
                 name={route.plan.fits_remaining_today ? "check-circle-outline" : "coffee-outline"}
@@ -621,6 +741,7 @@ export default function MapScreen() {
           </ScrollView>
         )}
 
+        {!route && (
         <View style={styles.gpsActions}>
           <Pressable
             testID="gps-stopped-btn"
@@ -639,7 +760,9 @@ export default function MapScreen() {
             <Text style={styles.gpsActionText}>Simular 70 km/h</Text>
           </Pressable>
         </View>
+        )}
       </View>
+      )}
     </View>
   );
 }
@@ -647,6 +770,41 @@ export default function MapScreen() {
 const useStyles = makeStyles((c) => ({
   container: { flex: 1, backgroundColor: c.surface },
   gpsBtn: { width: 36, height: 36, alignItems: "center", justifyContent: "center" },
+  weightBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: c.surfaceTertiary,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: c.border,
+    paddingHorizontal: spacing.md,
+    width: 96,
+  },
+  weightInput: { flex: 1, color: c.onSurface, fontSize: typography.lg, fontWeight: "800", paddingVertical: spacing.sm },
+  weightUnit: { color: c.muted, fontWeight: "700" },
+  avgText: { color: c.muted, fontSize: 11, marginTop: spacing.sm },
+  actionRow: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.md },
+  secondaryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingHorizontal: spacing.lg,
+    minHeight: 52,
+    borderRadius: radius.md,
+    backgroundColor: c.surfaceTertiary,
+  },
+  secondaryText: { color: c.onSurface, fontWeight: "700", fontSize: typography.sm },
+  startBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.sm,
+    minHeight: 52,
+    borderRadius: radius.md,
+    backgroundColor: c.brandPrimary,
+  },
   hoursRow: {
     flexDirection: "row",
     alignItems: "center",

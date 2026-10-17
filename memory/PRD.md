@@ -29,7 +29,14 @@ Mapbox (pendiente: build nativo) · Todas las funciones · UE 561/2006 · Email/
 - Rest areas (Mapbox Search Box rest_area/service_area) within 40 min before each mandatory break/daily rest, ≤1.5 km off route, shown on map and list
 - Custom origin (search or tap) + "Usar mis horas disponibles" toggle for future routes
 
+## Iteration 4 (2026-10-17)
+- Truck time model per segment: min(Mapbox car speed, legal truck limit by posted speed — 90 motorway / 80 conventional / posted below —, vehicle max); avg speed shown
+- Weight removed from vehicle profile; per-route "Peso total" input (max_weight to Mapbox), persisted locally
+- Fixed: search results hidden behind bottom sheet after a route; editing origin/destination now clears route; "Cambiar" button
+- Turn-by-turn navigator (/navigate): maneuver banner, ETA, remaining, speed vs vehicle max, tacho remaining, next mandatory stop & suggested area, off-route auto reroute, keep-awake, demo simulation (default on web)
+
 ## Backlog
+- P0: Voice guidance (expo-speech blocked; would need TTS integration)
 - P0: Opposite-direction rest area filtering (motorway side)
 - P1: Background GPS tracking (requires native build); ADR tunnel categories
 - P2: PDF export of logbook, fleet/company dashboard

@@ -7,6 +7,7 @@ const MapView = forwardRef<any, any>(function MapView({ style, children }, ref) 
   useImperativeHandle(ref, () => ({
     animateToRegion: () => {},
     fitToCoordinates: () => {},
+    animateCamera: () => {},
   }));
   return (
     <View style={[style, styles.box]} testID="map-web-placeholder">

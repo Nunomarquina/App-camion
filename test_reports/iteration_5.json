@@ -1,0 +1,27 @@
+{
+  "summary": "Frontend-only retest for TruckNav Pro iteration 5. All requested flows pass. BUG #3 is FIXED: changing destination OR origin after a calculated route clears the route and shows calc-route-btn again, allowing recalculation. Observed distances Barcelona 620 km, Valencia 356 km (expected ~359 within tolerance), Zaragoza->Valencia 316 km. route-clear-btn returns to form; route-weight-input value (28) persists across clear. toggle-details-btn reveals route-details. start-navigation-btn opens navigate screen with nav-banner, nav-next-distance, nav-next-instruction, nav-speed 90, nav-remaining decreasing (3h48m -> 3h44m) within 5s on web demo; nav-demo-toggle pauses it (stable 3h44m); nav-exit-btn returns to Ruta. Direct /navigate without active route renders nav-no-route. Vehicle tab has no weight field; vehicle form input testIDs confirmed: vehicle-name, vehicle-plate, vehicle-length_m, vehicle-width_m, vehicle-height_m, vehicle-axles, vehicle-max_speed_kmh. One minor UX glitch found on direct deep-link to /navigate (see minor section).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "navigate.tsx nav-back-btn", "issue": "When /navigate is opened directly (no history), pressing 'Volver' triggers 'The action GO_BACK was not handled by any navigator' warning. Use router.canGoBack() ? router.back() : router.replace('/(tabs)/map'). Reference: /app/frontend/app/navigate.tsx:170"}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Optional UX polish: in /app/frontend/app/navigate.tsx line ~170, replace router.back() in nav-back-btn with a canGoBack guard that falls back to router.replace('/(tabs)/map') so direct deep links don't throw the GO_BACK warning."
+  ],
+  "critical_code_review_comments": [
+    "map.tsx is 1046 lines — consider splitting (search bar, bottom sheet, details panel) into subcomponents for maintainability, though not blocking.",
+    "map.tsx onChangeText on origin-input and dest-input calls clearRoute() on every keystroke, which also clears errors. This is intentional for BUG #3 fix and works as expected."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (not tested this iteration)", "frontend": "100% of requested flows (BUG #3 recalc, details toggle, navigation start/pause/exit, no-route guard, vehicle tab weightless)"},
+  "seed_data_creation": "None. Used existing driver@test.com / test1234 credentials.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "testIDs confirmed on login: auth-email, auth-password, auth-submit. Tabs: tab-tacho, tab-map, tab-vehicle, tab-logbook. Map flow: dest-input/origin-input + dest-search-btn/origin-search-btn -> search-result-{i} -> calc-route-btn -> route-summary (route-distance, route-truck-time, route-total-time, route-avg-speed), then route-clear-btn, toggle-details-btn, start-navigation-btn. Navigate: nav-banner, nav-next-distance, nav-next-instruction, nav-remaining, nav-speed, nav-demo-toggle, nav-exit-btn, nav-no-route (when no active route). Vehicle: no weight field, inputs are vehicle-name/plate/length_m/width_m/height_m/axles/max_speed_kmh.",
+  "rca_of_issue": "BUG #3 root cause (now fixed): map.tsx onChangeText handlers for origin-input and dest-input now call clearRoute() which sets route to null. This un-mounts the route-summary block and re-renders the form with calc-route-btn, enabling recalculation after changing either endpoint. The pickPlace function (line 290) and setCustomOrigin (line 149) also setRoute(null). Verified end-to-end 620 -> 356 -> 316 km three-way recalculation."
+}

@@ -44,17 +44,32 @@ async def geocode(q: str, proximity: Optional[str] = None, limit: int = 5) -> Li
     return out
 
 
-def _downsample(points: List[List[float]], max_points: int = 1500) -> List[List[float]]:
-    if len(points) <= max_points:
-        return points
-    step = len(points) / max_points
-    res = [points[int(i * step)] for i in range(max_points)]
-    res.append(points[-1])
-    return res
+def _downsample_idx(n: int, max_points: int = 1500) -> List[int]:
+    if n <= max_points:
+        return list(range(n))
+    step = n / max_points
+    idx = [int(i * step) for i in range(max_points)]
+    if idx[-1] != n - 1:
+        idx.append(n - 1)
+    return idx
+
+
+def truck_segment_speed(d: float, t: float, posted_kmh: Optional[float], vehicle_max_kmh: float) -> float:
+    """Realistic truck speed (m/s) for a road segment.
+    - Never faster than Mapbox's free-flow car speed for that segment (curves, junctions, urban).
+    - Legal truck limits (EU/Spain >3.5t): 90 km/h on motorways (posted >= 100),
+      80 km/h on conventional roads (posted 80-99), posted limit below that.
+    - Never above the vehicle's own max speed (speed limiter)."""
+    car = d / t if t > 0 else vehicle_max_kmh / 3.6
+    if posted_kmh:
+        legal = 90 if posted_kmh >= 100 else 80 if posted_kmh >= 80 else posted_kmh
+    else:
+        legal = 90
+    return max(1.0, min(car, legal / 3.6, vehicle_max_kmh / 3.6))
 
 
 async def truck_route(origin: Dict[str, float], destination: Dict[str, float],
-                      vehicle: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+                      vehicle: Optional[Dict[str, Any]], weight_t: Optional[float] = None) -> Dict[str, Any]:
     coords = f"{origin['lng']},{origin['lat']};{destination['lng']},{destination['lat']}"
     params: Dict[str, Any] = {
         "access_token": _token(),
@@ -62,14 +77,15 @@ async def truck_route(origin: Dict[str, float], destination: Dict[str, float],
         "overview": "full",
         "steps": "true",
         "language": "es",
-        "annotations": "distance,duration",
+        "annotations": "distance,duration,maxspeed",
         "alternatives": "false",
     }
     if vehicle:
         # Mapbox ranges: height/width 0-10 m, weight 0-100 t
         params["max_height"] = min(10, vehicle["height_m"])
         params["max_width"] = min(10, vehicle["width_m"])
-        params["max_weight"] = min(100, vehicle["weight_t"])
+    if weight_t:
+        params["max_weight"] = min(100, weight_t)
     if vehicle and vehicle.get("hazmat"):
         params["exclude"] = "ferry"
 
@@ -87,31 +103,44 @@ async def truck_route(origin: Dict[str, float], destination: Dict[str, float],
         raise HTTPException(422, "No se encontró una ruta apta para las dimensiones del vehículo")
     route = routes[0]
 
-    # Truck time: cap each segment's speed at the vehicle max speed
-    max_speed_ms = (vehicle.get("max_speed_kmh", 90) if vehicle else 90) / 3.6
-    weight_factor = 1.05 if vehicle and vehicle.get("weight_t", 0) > 20 else 1.0
+    vmax = float(vehicle.get("max_speed_kmh", 90)) if vehicle else 90.0
     truck_s = 0.0
     cum = [0.0]
+    cum_m = [0.0]
     for leg in route.get("legs", []):
         ann = leg.get("annotation", {})
-        for d, t in zip(ann.get("distance", []), ann.get("duration", [])):
-            truck_s += max(t, d / max_speed_ms) * weight_factor
+        speeds = ann.get("maxspeed") or []
+        for i, (d, t) in enumerate(zip(ann.get("distance", []), ann.get("duration", []))):
+            posted = None
+            if i < len(speeds) and "speed" in speeds[i]:
+                posted = speeds[i]["speed"] * (1.609 if speeds[i].get("unit") == "mph" else 1)
+            truck_s += d / truck_segment_speed(d, t, posted, vmax)
             cum.append(truck_s)
+            cum_m.append(cum_m[-1] + d)
     if truck_s == 0:
         truck_s = route["duration"]
 
+    points = [[lat, lng] for lat, lng in polyline.decode(route["geometry"], 6)]
+    aligned = len(cum) == len(points)
+
     steps = []
+    along = 0.0
     for leg in route.get("legs", []):
         for st in leg.get("steps", []):
             man = st.get("maneuver", {})
+            loc = man.get("location") or [None, None]
             steps.append({
                 "instruction": man.get("instruction", ""),
                 "distance_km": round(st.get("distance", 0) / 1000, 2),
                 "duration_min": round(st.get("duration", 0) / 60, 1),
                 "name": st.get("name", ""),
+                "type": man.get("type", ""),
+                "modifier": man.get("modifier", ""),
+                "lat": loc[1],
+                "lng": loc[0],
+                "along_m": round(along, 1),
             })
-
-    points = [[lat, lng] for lat, lng in polyline.decode(route["geometry"], 6)]
+            along += st.get("distance", 0)
 
     violations = []
     for n in data.get("notifications", []) + [n for leg in route.get("legs", []) for n in leg.get("notifications", [])]:
@@ -119,15 +148,20 @@ async def truck_route(origin: Dict[str, float], destination: Dict[str, float],
             details = n.get("details", {})
             violations.append(details.get("message") or n.get("subtype") or "Restricción en la ruta")
 
+    idx = _downsample_idx(len(points))
+    dist_m = route["distance"]
     return {
-        "distance_km": round(route["distance"] / 1000, 2),
+        "distance_km": round(dist_m / 1000, 2),
         "duration_min": round(route["duration"] / 60, 1),
         "truck_duration_s": int(truck_s),
-        "polyline": _downsample(points),
+        "avg_speed_kmh": round(dist_m / truck_s * 3.6, 1) if truck_s else None,
+        "polyline": [points[i] for i in idx],
+        "cum_m": [round(cum_m[i], 1) for i in idx] if aligned else None,
+        "cum_s": [round(cum[i], 1) for i in idx] if aligned else None,
         "steps": steps,
         "violations": violations,
         "_points": points,
-        "_cum": cum if len(cum) == len(points) else None,
+        "_cum": cum if aligned else None,
     }
 
 

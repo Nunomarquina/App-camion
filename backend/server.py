@@ -113,7 +113,6 @@ class VehicleIn(BaseModel):
     length_m: float = Field(gt=0, le=30)
     width_m: float = Field(gt=0, le=5)
     height_m: float = Field(gt=0, le=6)
-    weight_t: float = Field(gt=0, le=80)
     axles: int = Field(ge=2, le=10)
     max_speed_kmh: int = Field(ge=40, le=130, default=90)
     hazmat: bool = False
@@ -585,7 +584,7 @@ class RouteIn(BaseModel):
     vehicle_id: Optional[str] = None
     tz_offset_min: int = 0
     use_current_hours: bool = True
-
+    weight_t: Optional[float] = Field(default=None, gt=0, le=100)
 
 @api_router.get("/geocode")
 async def geocode(q: str, lat: Optional[float] = None, lng: Optional[float] = None,
@@ -604,15 +603,17 @@ async def calculate_route(body: RouteIn, user=Depends(get_current_user)):
     if not vehicle:
         vehicle = await db.vehicles.find_one({"user_id": user["id"], "is_active": True}, {"_id": 0})
 
-    route = await mapbox_routing.truck_route(body.origin.model_dump(), body.destination.model_dump(), vehicle)
+    route = await mapbox_routing.truck_route(
+        body.origin.model_dump(), body.destination.model_dump(), vehicle, body.weight_t)
 
     warnings: List[str] = []
+    weight_txt = f", {body.weight_t:g}t" if body.weight_t else ""
     if not vehicle:
         warnings.append("Sin vehículo activo: la ruta no tiene en cuenta dimensiones.")
     else:
         warnings.append(
             f"Ruta evitando restricciones < {vehicle['height_m']}m alto, "
-            f"{vehicle['width_m']}m ancho, {vehicle['weight_t']}t."
+            f"{vehicle['width_m']}m ancho{weight_txt}."
         )
         if vehicle.get("hazmat"):
             warnings.append("ADR: Mapbox no filtra túneles por categoría ADR. Verifica túneles en la ruta.")
