@@ -11,7 +11,8 @@ from detection_learning import analyze, default_profile
 import mapbox_routing
 import tts
 import re
-from fastapi import Response
+from fastapi import Response, UploadFile, File
+from ddd_parser import parse_driver_card, DDDError
 import bcrypt
 import jwt
 from pathlib import Path
@@ -510,8 +511,68 @@ async def list_card_activities(user=Depends(get_current_user)):
 
 @api_router.post("/tacho/card-sim")
 async def card_sim(body: CardSimIn, user=Depends(get_current_user)):
-    """Read (simulated) tachograph card, compare with GPS detections, learn
-    detection parameters and confirm/correct GPS events."""
+    """Test mode: simulated card read (uses stored card data or driver confirmations)."""
+    return await _compare_with_card(user, body.card_id)
+
+
+MAX_DDD_BYTES = 2 * 1024 * 1024
+
+
+@api_router.post("/tacho/card-import")
+async def card_import(file: UploadFile = File(...), user=Depends(get_current_user)):
+    """Import a real driver card download (.DDD), store its activities and
+    compare them with GPS detections."""
+    raw = await file.read(MAX_DDD_BYTES + 1)
+    if len(raw) > MAX_DDD_BYTES:
+        raise HTTPException(400, "El archivo es demasiado grande para ser una tarjeta de conductor")
+    try:
+        card = parse_driver_card(raw, now_utc())
+    except DDDError as e:
+        raise HTTPException(400, str(e))
+    acts = card["activities"]
+    start, end = acts[0]["start"], acts[-1]["end"]
+    # Card is the legal reference: replace any card data in the covered period
+    await db.card_activities.delete_many({
+        "user_id": user["id"],
+        "started_at": {"$lt": end.replace(tzinfo=None)},
+        "ended_at": {"$gt": start.replace(tzinfo=None)},
+    })
+    now = now_utc()
+    await db.card_activities.insert_many([
+        {"id": str(uuid.uuid4()), "user_id": user["id"], "state": a["state"],
+         "started_at": a["start"], "ended_at": a["end"], "created_at": now,
+         "card_number": card.get("card_number")}
+        for a in acts
+    ])
+    holder = " ".join(x for x in [card.get("holder_first_names"), card.get("holder_surname")] if x)
+    summary = {
+        "card_number": card.get("card_number") or "—",
+        "holder_name": holder or "—",
+        "expiry_date": card.get("expiry_date"),
+        "generation": card["generation"],
+        "days": card["days"],
+        "activities": len(acts),
+        "driving_s": card["driving_s"],
+        "period_start": start,
+        "period_end": end,
+        "file_name": file.filename,
+        "imported_at": now,
+    }
+    await db.card_imports.insert_one({"id": str(uuid.uuid4()), "user_id": user["id"], **summary})
+    result = await _compare_with_card(user, summary["card_number"])
+    return {**result, "card": summary}
+
+
+@api_router.get("/tacho/card-imports/last")
+async def last_card_import(user=Depends(get_current_user)):
+    doc = await db.card_imports.find_one({"user_id": user["id"]}, {"_id": 0, "user_id": 0},
+                                         sort=[("imported_at", -1)])
+    return doc
+
+
+async def _compare_with_card(user: dict, card_id: str) -> dict:
+    """Compare card activities with GPS detections, learn detection
+    parameters and confirm/correct GPS events."""
     now = now_utc()
     since = now - timedelta(days=CARD_WINDOW_DAYS)
     since_naive = since.replace(tzinfo=None)
@@ -561,11 +622,11 @@ async def card_sim(body: CardSimIn, user=Depends(get_current_user)):
     confirmed = report["verified"] + report["corrections"] + res.modified_count
     acc = f"{round(report['accuracy'] * 100)}%" if report["accuracy"] is not None else "—"
     return {
-        "card_id": body.card_id,
+        "card_id": card_id,
         "confirmed_events": confirmed,
         "report": report,
         "profile": _public_profile(new_profile),
-        "message": f"Tarjeta {body.card_id} leída. Precisión GPS {acc}. "
+        "message": f"Tarjeta {card_id} leída. Precisión GPS {acc}. "
                    f"{report['corrections']} corregidos, {confirmed} confirmados.",
     }
 

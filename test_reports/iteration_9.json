@@ -1,0 +1,37 @@
+{
+  "summary": "Iteration 9 covers the new real driver-card .DDD import feature plus simulation regression. Backend+parser unit tests (14/14 passed, pytest ~2.3s): parse_driver_card correctly parses Gen1-wrap and Gen2-nowrap synthetic .DDD files from ddd_fixture.build_ddd(sample_days(now,3)), orders activities ascending, computes driving_s=75600 (3 days x 2 x (4h+3h)=21h), reads card_number 'E123456789012300' and holder 'JUAN'/'GARCIA LOPEZ'. 'Card not inserted' changes are correctly skipped (leading not_inserted=1 segment is dropped). Backend POST /api/tacho/card-import happy-path returns 200 with card.card_number='E123456789012300', card.holder_name='JUAN GARCIA LOPEZ', card.days=3, card.activities>0, card.driving_s=75600, card.period_start/period_end, report.card_is_real=true, and Spanish message. Error paths return 400 with Spanish detail: random bytes -> 'No es un archivo de tarjeta de conductor válido', 0x76 first byte -> 'tacógrafo del vehículo', <50 bytes -> 'vacío o incompleto', >2MB -> 'demasiado grande'. No auth -> 403 (OAuth2PasswordBearer). Re-importing the exact same file does NOT duplicate card_activities (count_before==count_after via GET /api/tacho/card-activities) – the overlapping-period delete+insert works. GET /api/tacho/card-imports/last returns the latest summary doc with the correct fields. Regression: POST /api/tacho/card-sim with {card_id:'SIM-TEST9'} still returns 200 with report+message+card_id. Frontend testIDs verified on mobile viewport 390x844 with driver@test.com/test1234: card-box present; after a prior real import last-card-info shows 'JUAN GARCIA LOPEZ / Nº E123456789012300 / Última lectura: 17 oct, 12:19 · 3 días · 21h 00m conducción'; card-import-btn 'LEER TARJETA (.DDD)' opens the hidden <input type='file'> (handled via Playwright expect_file_chooser.set_files('/tmp/test_card.ddd')) and after upload the card-report-sheet opens with card-report-card showing holder name, card number, expiry (1/1/2030), period '14 oct – 17 oct · 3 días · 21 h conducción' – matches server response. card-sim-btn 'Modo prueba: simular lectura' opens card-report-sheet with source 'Datos de tarjeta: 16 actividades' (card_is_real=true because real card_activities now exist in DB). last-card-info correctly updates to the new import timestamp after the real import. No red screen, no console errors.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration9_card_import.py",
+    "/app/test_reports/pytest/iteration9.xml",
+    "/app/test_reports/iteration_9.json"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "ddd_parser.py (~145 lines) is clean, pure-function style, no I/O. _blocks() correctly tolerates truncated tails (break on btype>3 or short length) which prevents infinite loops on corrupted files.",
+    "ddd_parser._daily_records uses a 400-record safety cap and a cyclic read() helper that handles buffer wrap – matches EU Annex IB layout. Guards oldest/newest pointer vs size and raises Spanish DDDError 'Puntero de actividad fuera de rango'.",
+    "server.py card-import streams at most MAX_DDD_BYTES+1 (2 MiB+1) and checks AFTER read, so a huge file is actually buffered in memory before rejection – acceptable because UploadFile is spooled to disk by Starlette, but worth noting for very large uploads. Not a bug.",
+    "server.py card-import uses delete_many on overlapping period before insert_many, which is correct for idempotency (verified by test_reimport_does_not_duplicate). card_number is stored on each card_activity which allows future per-card filtering.",
+    "server.py _compare_with_card: when real card_activities exist (card_is_real=true) the GPS detections are compared against the card timeline, not against driver manual confirmations – correct behaviour per spec.",
+    "frontend/tacho.tsx importCard() correctly uses expo-document-picker's getDocumentAsync({type:'*/*'}) and uploadForm() for multipart. On web the file chooser is a hidden <input type='file'> which Playwright reaches via expect_file_chooser. Error handling surfaces backend's Spanish detail via cardMsg state.",
+    "frontend/upload.ts correctly selects fetch vs expo/fetch per platform and forwards Spanish 'detail' from FastAPI HTTPException. No multipart boundary issues observed.",
+    "No deprecated expo packages detected (no expo-av, expo-barcode-scanner, expo-background-fetch imports in the touched files). expo-document-picker is current."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration9_card_import.py",
+    "/app/test_reports/pytest/iteration9.xml",
+    "/app/test_reports/iteration_9.json"
+  ],
+  "success_rate": {"backend": "100% (14/14 pytest)", "frontend": "100% of requested testIDs responded (card-box, last-card-info, card-import-btn, card-sim-btn, card-report-sheet, card-report-card)"},
+  "seed_data_creation": "Wrote /tmp/test_card.ddd (565 bytes) via ddd_fixture.build_ddd(sample_days(now,3), gen=1, wrap=True) to drive the frontend DocumentPicker test. 3 days of card_activities for driver@test.com in db.card_activities (replaced each run due to overlapping-period delete+insert) plus multiple docs in db.card_imports – all tagged with card_number 'E123456789012300'. No manual cleanup performed because the import is idempotent and the previous iterations' data model expected this real card to be present going forward.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "driver@test.com / test1234. Backend login returns {access_token, token_type:'bearer', user:{...}} – NOT 'token'. EXPO_PUBLIC_BACKEND_URL (not EXPO_BACKEND_URL) is the frontend env key in /app/frontend/.env. The container clock is Oct 2026, so sample_days(now,3) yields dates like '14 oct – 17 oct'. ddd_fixture.build_ddd(wrap=True) places records straddling the cyclic buffer end – the parser handles both wrap and no-wrap. On the Expo web preview, expo-document-picker renders a hidden <input type='file'> element, so Playwright's page.expect_file_chooser()+fc.set_files() is the way to simulate a .DDD selection. /app/backend/pytest.ini pins xdist with -n auto; use -o addopts='' to disable parallelism if a module-scoped auth fixture is used, otherwise the token fixture may rerun per worker.",
+  "rca_of_issue": "N/A – no bugs this iteration. All 14 backend + unit tests passed, all requested frontend testIDs and user flows worked. The only test harness friction was: (1) auth response uses 'access_token' not 'token' (fixed in test file); (2) pytest xdist in backend/pytest.ini caused one 403 vs the fixture race which was avoided by removing xdist for this suite via -o addopts=''."
+}

@@ -21,16 +21,33 @@ export type CardReport = {
   tips: string[];
 };
 
+export type CardInfo = {
+  card_number: string;
+  holder_name: string;
+  expiry_date: string | null;
+  days: number;
+  activities: number;
+  driving_s: number;
+  period_start: string;
+  period_end: string;
+  imported_at: string;
+};
+
+const fmtDay = (s: string) =>
+  new Date(s + (s.endsWith("Z") || s.includes("+") ? "" : "Z")).toLocaleDateString("es-ES", { day: "numeric", month: "short" });
+
 export function CardReportSheet({
   visible,
   onClose,
   report,
   message,
+  card,
 }: {
   visible: boolean;
   onClose: () => void;
   report: CardReport | null;
   message: string | null;
+  card?: CardInfo | null;
 }) {
   const insets = useSafeAreaInsets();
   const styles = useStyles();
@@ -52,6 +69,21 @@ export function CardReportSheet({
           </View>
           {report && (
             <ScrollView style={{ maxHeight: 480 }}>
+              {card && (
+                <View style={styles.cardInfo} testID="card-report-card">
+                  <Icon name="card-account-details-outline" size={28} color={colors.brandPrimary} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.cardName}>{card.holder_name}</Text>
+                    <Text style={styles.cardSub}>
+                      Nº {card.card_number}
+                      {card.expiry_date ? ` · caduca ${new Date(card.expiry_date).toLocaleDateString("es-ES")}` : ""}
+                    </Text>
+                    <Text style={styles.cardSub}>
+                      {fmtDay(card.period_start)} – {fmtDay(card.period_end)} · {card.days} días · {Math.round(card.driving_s / 3600)} h conducción
+                    </Text>
+                  </View>
+                </View>
+              )}
               <Text style={styles.source} testID="card-report-source">
                 {report.card_is_real
                   ? `Datos de tarjeta: ${report.card_activities} actividades`
@@ -141,6 +173,17 @@ const useStyles = makeStyles((c) => ({
   headRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: spacing.md },
   title: { color: c.onSurface, fontSize: typography.xl, fontWeight: "800" },
   source: { color: c.muted, fontSize: typography.sm, marginBottom: spacing.md },
+  cardInfo: {
+    flexDirection: "row",
+    gap: spacing.md,
+    alignItems: "center",
+    backgroundColor: c.surfaceTertiary,
+    borderRadius: radius.lg,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  cardName: { color: c.onSurface, fontSize: typography.base, fontWeight: "800" },
+  cardSub: { color: c.muted, fontSize: 12, marginTop: 2 },
   accBox: { backgroundColor: c.surfaceTertiary, borderRadius: radius.lg, padding: spacing.lg, marginBottom: spacing.md },
   accLabel: { color: c.muted, fontSize: 10, fontWeight: "700", letterSpacing: 1 },
   accValue: { fontSize: 44, fontWeight: "900" },

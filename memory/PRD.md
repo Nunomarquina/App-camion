@@ -53,3 +53,8 @@ Mapbox (pendiente: build nativo) · Todas las funciones · UE 561/2006 · Email/
 - P0: Opposite-direction rest area filtering (motorway side)
 - P1: Background GPS tracking (requires native build); ADR tunnel categories
 - P2: PDF export of logbook, fleet/company dashboard
+
+## Real driver card import (.DDD)
+- Backend `ddd_parser.py` parses EU driver-card downloads (Gen1/Gen2 blocks; EF_Identification 0x0520, EF_Driver_Activity_Data 0x0504 cyclic buffer). Rejects VU downloads / invalid files.
+- `POST /api/tacho/card-import` (multipart `file`) stores activities in card_activities (replaces overlapping period), saves card_imports summary and runs GPS-vs-card comparison. `GET /api/tacho/card-imports/last`.
+- Frontend: Tacho tab "LEER TARJETA (.DDD)" via expo-document-picker + `src/utils/upload.ts`; simulation kept as "Modo prueba" link. Test fixture: backend/tests/ddd_fixture.py (synthetic, no real card file tested yet).

@@ -11,7 +11,9 @@ import {
   Linking,
 } from "react-native";
 import { useGpsAutoTracking } from "@/src/gps-tracker";
-import { CardReportSheet, CardReport } from "@/src/components/card-report-sheet";
+import { CardReportSheet, CardReport, CardInfo } from "@/src/components/card-report-sheet";
+import * as DocumentPicker from "expo-document-picker";
+import { uploadForm } from "@/src/utils/upload";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import Icon from "@react-native-vector-icons/material-design-icons";
@@ -83,6 +85,8 @@ export default function TachoScreen() {
   const [autoGps, setAutoGps] = useState(false);
   const [cardReport, setCardReport] = useState<CardReport | null>(null);
   const [showReport, setShowReport] = useState(false);
+  const [lastCard, setLastCard] = useState<CardInfo | null>(null);
+  const [cardInfo, setCardInfo] = useState<CardInfo | null>(null);
   const styles = useStyles();
 
   const load = useCallback(async () => {
@@ -124,6 +128,50 @@ export default function TachoScreen() {
     setRefreshing(false);
   }
 
+  const loadLastCard = useCallback(async () => {
+    try {
+      setLastCard(await api<CardInfo | null>("/tacho/card-imports/last"));
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    loadLastCard();
+  }, [loadLastCard]);
+
+  function applyCardResult(res: any) {
+    setCardMsg(res.message);
+    setCardReport(res.report);
+    gps.setProfile({ speed_threshold_kmh: res.profile.speed_threshold_kmh, hold_s: res.profile.hold_s });
+    setShowReport(true);
+  }
+
+  async function importCard() {
+    setCardMsg(null);
+    try {
+      const pick = await DocumentPicker.getDocumentAsync({ type: "*/*", copyToCacheDirectory: true });
+      if (pick.canceled || !pick.assets?.[0]) return;
+      const f = pick.assets[0];
+      setCardReading(true);
+      const res: any = await uploadForm("/tacho/card-import", "file", {
+        uri: f.uri,
+        name: f.name || "tarjeta.ddd",
+        mimeType: f.mimeType,
+      });
+      setLastCard(res.card);
+      setCardInfo(res.card);
+      applyCardResult({
+        ...res,
+        message: `Tarjeta de ${res.card.holder_name} leída: ${res.card.activities} actividades en ${res.card.days} días.`,
+      });
+      await load();
+    } catch (e: any) {
+      setCardMsg(e.message);
+      setTimeout(() => setCardMsg(null), 6000);
+    } finally {
+      setCardReading(false);
+    }
+  }
+
   async function simulateCard() {
     setCardReading(true);
     setCardMsg(null);
@@ -132,10 +180,8 @@ export default function TachoScreen() {
         method: "POST",
         body: JSON.stringify({ card_id: "SIM-" + (user?.id?.slice(0, 6) || "001") }),
       });
-      setCardMsg(res.message);
-      setCardReport(res.report);
-      gps.setProfile({ speed_threshold_kmh: res.profile.speed_threshold_kmh, hold_s: res.profile.hold_s });
-      setShowReport(true);
+      setCardInfo(null);
+      applyCardResult(res);
       await load();
     } catch (e: any) {
       setCardMsg(e.message);
@@ -444,20 +490,42 @@ export default function TachoScreen() {
           </View>
         </View>
 
-        {/* Card sim */}
-        <Pressable
-          testID="card-sim-btn"
-          onPress={simulateCard}
-          style={({ pressed }) => [
-            styles.cardSimBtn,
-            pressed && { opacity: 0.85 },
-          ]}
-          disabled={cardReading}
-        >
-          <Icon name="card-account-details-outline" size={22} color={colors.onBrandSecondary} />
-          <Text style={styles.cardSimText}>
-            {cardReading ? "LEYENDO..." : "SIMULAR LECTURA DE TARJETA"}
-          </Text>
+        {/* Real card import (.DDD) */}
+        <Text style={[styles.sectionTitle, { marginTop: spacing.xl }]}>TARJETA DE CONDUCTOR</Text>
+        <View style={styles.cardBox} testID="card-box">
+          {lastCard ? (
+            <View testID="last-card-info">
+              <Text style={styles.cardHolder}>{lastCard.holder_name}</Text>
+              <Text style={styles.cardLine}>Nº {lastCard.card_number}</Text>
+              <Text style={styles.cardLine}>
+                Última lectura: {new Date(lastCard.imported_at + (/Z|\+/.test(lastCard.imported_at) ? "" : "Z")).toLocaleString("es-ES", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                {" · "}{lastCard.days} días · {formatHM(lastCard.driving_s)} conducción
+              </Text>
+            </View>
+          ) : (
+            <Text style={styles.cardLine} testID="card-help">
+              Descarga tu tarjeta con tu lector o llave (TachoDrive, Optac, DigiDL…) y elige aquí el archivo .DDD. La app compara la tarjeta con lo que detectó el GPS.
+            </Text>
+          )}
+          <Pressable
+            testID="card-import-btn"
+            onPress={importCard}
+            style={({ pressed }) => [styles.cardSimBtn, pressed && { opacity: 0.85 }]}
+            disabled={cardReading}
+          >
+            {cardReading ? (
+              <ActivityIndicator color={colors.onBrandSecondary} />
+            ) : (
+              <Icon name="card-account-details-outline" size={22} color={colors.onBrandSecondary} />
+            )}
+            <Text style={styles.cardSimText}>
+              {cardReading ? "LEYENDO TARJETA..." : "LEER TARJETA (.DDD)"}
+            </Text>
+          </Pressable>
+        </View>
+        <Pressable testID="card-sim-btn" onPress={simulateCard} disabled={cardReading} style={styles.simLink} hitSlop={8}>
+          <Icon name="flask-outline" size={16} color={colors.muted} />
+          <Text style={styles.simLinkText}>Modo prueba: simular lectura</Text>
         </Pressable>
         {cardMsg && (
           <Text style={styles.cardMsg} testID="card-msg">
@@ -470,6 +538,7 @@ export default function TachoScreen() {
         onClose={() => setShowReport(false)}
         report={cardReport}
         message={cardMsg}
+        card={cardInfo}
       />
     </View>
   );
@@ -727,8 +796,21 @@ const useStyles = makeStyles((c) => ({
     backgroundColor: c.brandSecondary,
     paddingVertical: spacing.lg,
     borderRadius: radius.md,
-    marginTop: spacing.lg,
+    marginTop: spacing.md,
+    minHeight: 56,
   },
+  cardBox: { backgroundColor: c.surfaceSecondary, borderRadius: radius.lg, padding: spacing.lg },
+  cardHolder: { color: c.onSurface, fontSize: typography.lg, fontWeight: "800" },
+  cardLine: { color: c.muted, fontSize: typography.sm, marginTop: 4 },
+  simLink: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.xs,
+    minHeight: 44,
+    marginTop: spacing.sm,
+  },
+  simLinkText: { color: c.muted, fontSize: typography.sm, fontWeight: "600", textDecorationLine: "underline" },
   cardSimText: {
     color: c.onBrandSecondary,
     fontSize: typography.base,
